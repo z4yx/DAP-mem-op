@@ -1,0 +1,8 @@
+{
+    "taps": [
+        {"name": "ICE",   "irlen": 4},
+        {"name": "DAP",   "irlen": 4},
+        {"name": "FPGA",  "irlen": 6}
+    ],
+    "target": "DAP"
+}

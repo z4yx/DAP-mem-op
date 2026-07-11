@@ -1,0 +1,22 @@
+{
+    "_description": "Zynq-7020 (XC7Z020) JTAG 内部菊花链 — PL_TAP 在链首",
+    "_note": "当 DAP_PL_MODE 信号翻转或 SLCR 重配置后可能出现此顺序。",
+    "_topology": "TDI → PL_TAP → ARM_DAP → TDO",
+
+    "taps": [
+        {
+            "name": "PL_TAP",
+            "irlen": 6,
+            "_idcode": "0x03722093",
+            "_desc": "Xilinx 7-Series FPGA TAP (Artix-7 架构)"
+        },
+        {
+            "name": "ARM_DAP",
+            "irlen": 4,
+            "_idcode": "0x4BA00477",
+            "_desc": "ARM CoreSight DAP (Cortex-A9 MPCore 双核)"
+        }
+    ],
+
+    "target": "ARM_DAP"
+}
