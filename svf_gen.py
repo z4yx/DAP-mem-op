@@ -53,10 +53,12 @@ Memory Command Sequence (command-file mode)
 Command File Format
 -------------------
     <addr_hex>  <data_hex>  <W|R>  [Y]
+    0  <count>  TCK
     # This is a comment line
     0x80000000  DEADBEEF  W
     0x80000004  12345678  R  Y
     0x80001000  AABBCCDD  R
+    0  100  TCK
 
 Usage
 -----
@@ -75,6 +77,7 @@ import struct
 import sys
 import textwrap
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import List, Optional
 
 
@@ -82,20 +85,29 @@ from typing import List, Optional
 # Memory Command (for text-based command files)
 # =============================================================================
 
+class Op(Enum):
+    """Memory command operation type."""
+    R = 0   # read
+    W = 1   # write
+    T = 2   # TCK wait
+
+
 @dataclass
 class MemCmd:
-    """A single memory read/write command parsed from a text command file.
+    """A single command parsed from a text command file.
 
     Fields:
-        addr:    Target memory address (32-bit).
-        data:    Data value to write, or expected data on read.
-        is_read: True for read (R), False for write (W).
-        verify:  For reads: whether to compare TDO against *data* (Y/N).
-                 Only meaningful when *is_read* is True.
+        addr:   Target memory address (32-bit).  Ignored for wait commands.
+        data:   Data value to write, expected data on read, or TCK cycle
+                count for wait commands.
+        op:     Operation type — ``Op.R`` (read), ``Op.W`` (write), or
+                ``Op.T`` (TCK wait).
+        verify: For reads: whether to compare TDO against *data* (Y/N).
+                Only meaningful when *op* is ``Op.R``.
     """
     addr: int
     data: int
-    is_read: bool
+    op: Op
     verify: bool = False
 
 
@@ -106,11 +118,20 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
     whitespace-separated fields::
 
         <addr_hex>  <data_hex>  <W|R>  [Y]
+        0  <count>  TCK
 
     - *addr_hex*   — 32-bit address in hexadecimal (e.g. ``0x80000000``).
     - *data_hex*   — data word in hex; width is clipped to *data_width* bits.
     - *W* or *R*   — write or read operation.
     - *Y*          — (optional, read-only) verify that TDO matches *data_hex*.
+
+    A special delay/wait form is also supported::
+
+        0  <count>  TCK
+        0  100  TCK
+
+    This inserts a RUNTEST wait for *count* TCK cycles; no JTAG scan
+    operations are emitted.
 
     Lines whose first non-whitespace character is ``#`` are treated as
     comments and skipped.  Blank lines are also ignored.
@@ -131,16 +152,29 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
                     f"(addr data R|W), got {len(parts)}: {line!r}")
 
             addr = int(parts[0], 16)
-            data = int(parts[1], 16) & mask
             rw = parts[2].upper()
-            if rw not in ("R", "W"):
+
+            # --- TCK wait: "0 <count> TCK" ---
+            if addr == 0 and rw == "TCK":
+                tck = int(parts[1], 10)
+                if tck <= 0:
+                    raise ValueError(
+                        f"{path}:{lineno}: TCK count must be positive, "
+                        f"got {tck}: {line!r}")
+                cmds.append(MemCmd(addr=0, data=tck, op=Op.T))
+                continue
+
+            data = int(parts[1], 16) & mask
+
+            ops = {"R": Op.R, "W": Op.W}
+            if rw not in ops:
                 raise ValueError(
-                    f"{path}:{lineno}: third field must be R or W, "
+                    f"{path}:{lineno}: third field must be R, W, or TCK, "
                     f"got {rw!r}: {line!r}")
 
-            is_read = (rw == "R")
+            op = ops[rw]
             verify = False
-            if is_read and len(parts) >= 4:
+            if op == Op.R and len(parts) >= 4:
                 v = parts[3].upper()
                 if v == "Y":
                     verify = True
@@ -150,7 +184,7 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
                         f"(or omitted), got {v!r}: {line!r}")
 
             cmds.append(MemCmd(addr=addr, data=data,
-                               is_read=is_read, verify=verify))
+                               op=op, verify=verify))
 
     return cmds
 
@@ -861,10 +895,12 @@ class CortexR52SvfBuilder:
         """Generate SVF from a parsed list of MemCmd entries."""
 
         if self.verbose:
-            reads = sum(1 for c in self.cmd_list if c.is_read)
-            writes = sum(1 for c in self.cmd_list if not c.is_read)
-            print(f"[INFO] Command file: {writes} writes, {reads} reads "
-                  f"({len(self.cmd_list)} total)", file=sys.stderr)
+            reads = sum(1 for c in self.cmd_list if c.op == Op.R)
+            writes = sum(1 for c in self.cmd_list if c.op == Op.W)
+            waits = sum(1 for c in self.cmd_list if c.op == Op.T)
+            print(f"[INFO] Command file: {writes} writes, {reads} reads, "
+                  f"{waits} waits ({len(self.cmd_list)} total)",
+                  file=sys.stderr)
 
         # --- Build chain configuration -----------------------------------------
         chain = None
@@ -888,7 +924,10 @@ class CortexR52SvfBuilder:
         #  PHASE 5 — Execute Memory Commands
         # ==================================================================
         g.comment("=" * 70)
-        g.comment(f"PHASE 5: Execute {len(self.cmd_list)} memory commands")
+        waits_count = sum(1 for c in self.cmd_list if c.op == Op.T)
+        rw_count = len(self.cmd_list) - waits_count
+        g.comment(f"PHASE 5: Execute {len(self.cmd_list)} commands "
+                  f"({rw_count} R/W, {waits_count} wait)")
         g.comment(f"        Data width: {self.data_width}-bit")
         g.comment("        Mode: explicit TAR per access (ADDRINC_OFF)")
         g.comment("=" * 70)
@@ -904,7 +943,15 @@ class CortexR52SvfBuilder:
         for idx, cmd in enumerate(self.cmd_list):
             label = f"[{idx + 1}/{len(self.cmd_list)}]"
 
-            if cmd.is_read:
+            if cmd.op == Op.T:
+                # --- Wait / delay ---
+                g.comment(f"{label} RUNTEST {cmd.data} TCK "
+                          f"(wait {cmd.data} cycles)")
+                g.runtest(cmd.data)
+                g.blank()
+                continue
+
+            if cmd.op == Op.R:
                 # --- Read operation ---
                 g.ap_write(SvfGenerator.AP_TAR, cmd.addr,
                            f"{label} TAR ← 0x{cmd.addr:08X}")
@@ -1010,10 +1057,12 @@ def main():
             Each non-empty, non-comment line has 3 or 4 whitespace-separated
             fields:
                 <addr_hex>  <data_hex>  <W|R>  [Y]
+                0  <count>  TCK
             - addr_hex:  memory address in hex (e.g. 0x80000000)
             - data_hex:  data to write, or expected data on read
             - W | R:     write or read operation
             - Y:         (optional, read-only) verify TDO against data_hex
+            - 0 <count> TCK:  wait <count> cycles in Run-Test/Idle
             Lines starting with # are comments.
 
             Chain Config Format (JSON)

@@ -3,6 +3,8 @@
 #
 # Format: <addr_hex>  <data_hex>  <W|R>  [Y]
 
+0     100 TCK
+
 # --- Write some registers / memory locations ---
 1000  DEADBEEF  R Y
 1004  CAFEBABE  R Y
