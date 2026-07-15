@@ -85,11 +85,13 @@ from typing import List, Optional
 # Memory Command (for text-based command files)
 # =============================================================================
 
+
 class Op(Enum):
     """Memory command operation type."""
-    R = 0   # read
-    W = 1   # write
-    T = 2   # TCK wait
+
+    R = 0  # read
+    W = 1  # write
+    T = 2  # TCK wait
 
 
 @dataclass
@@ -105,6 +107,7 @@ class MemCmd:
         verify: For reads: whether to compare TDO against *data* (Y/N).
                 Only meaningful when *op* is ``Op.R``.
     """
+
     addr: int
     data: int
     op: Op
@@ -149,7 +152,8 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
             if len(parts) < 3:
                 raise ValueError(
                     f"{path}:{lineno}: expected at least 3 fields "
-                    f"(addr data R|W), got {len(parts)}: {line!r}")
+                    f"(addr data R|W), got {len(parts)}: {line!r}"
+                )
 
             addr = int(parts[0], 16)
             rw = parts[2].upper()
@@ -160,7 +164,8 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
                 if tck <= 0:
                     raise ValueError(
                         f"{path}:{lineno}: TCK count must be positive, "
-                        f"got {tck}: {line!r}")
+                        f"got {tck}: {line!r}"
+                    )
                 cmds.append(MemCmd(addr=0, data=tck, op=Op.T))
                 continue
 
@@ -170,7 +175,8 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
             if rw not in ops:
                 raise ValueError(
                     f"{path}:{lineno}: third field must be R, W, or TCK, "
-                    f"got {rw!r}: {line!r}")
+                    f"got {rw!r}: {line!r}"
+                )
 
             op = ops[rw]
             verify = False
@@ -181,10 +187,10 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
                 elif v != "N":
                     raise ValueError(
                         f"{path}:{lineno}: fourth field must be Y or N "
-                        f"(or omitted), got {v!r}: {line!r}")
+                        f"(or omitted), got {v!r}: {line!r}"
+                    )
 
-            cmds.append(MemCmd(addr=addr, data=data,
-                               op=op, verify=verify))
+            cmds.append(MemCmd(addr=addr, data=data, op=op, verify=verify))
 
     return cmds
 
@@ -192,6 +198,7 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
 # =============================================================================
 # JTAG Daisy-Chain Configuration
 # =============================================================================
+
 
 @dataclass
 class JtagChainConfig:
@@ -240,7 +247,8 @@ class JtagChainConfig:
         if target_index < 0 or target_index >= len(taps):
             raise ValueError(
                 f"Chain config: target_index {target_index} out of range "
-                f"[0, {len(taps) - 1}]")
+                f"[0, {len(taps) - 1}]"
+            )
 
         return cls(taps=taps, target_index=target_index)
 
@@ -257,8 +265,7 @@ class JtagChainConfig:
             for i, tap in enumerate(taps):
                 if tap.get("name") == name:
                     return i
-            raise ValueError(
-                f"Chain config: target '{name}' not found in taps list")
+            raise ValueError(f"Chain config: target '{name}' not found in taps list")
         if "target_index" in cfg:
             return int(cfg["target_index"])
         # Default: first tap
@@ -283,19 +290,21 @@ class JtagChainConfig:
 
         # IR lengths before / after the target
         irlen_before = sum(tap["irlen"] for tap in self.taps[:t])
-        irlen_after  = sum(tap["irlen"] for tap in self.taps[t + 1:])
+        irlen_after = sum(tap["irlen"] for tap in self.taps[t + 1 :])
 
         total_bits = irlen_before + target_ir_bits + irlen_after
 
         # BYPASS IR = all-1s for the given length
         bypass_before = (1 << irlen_before) - 1 if irlen_before else 0
-        bypass_after  = (1 << irlen_after)  - 1 if irlen_after  else 0
+        bypass_after = (1 << irlen_after) - 1 if irlen_after else 0
 
         # TDI layout (LSB shifted first in JTAG):
         #   [bypass_after] [target_ir] [bypass_before]
-        tdi = ((bypass_after << (irlen_before + target_ir_bits))
-               | (target_ir << irlen_before)
-               | bypass_before)
+        tdi = (
+            (bypass_after << (irlen_before + target_ir_bits))
+            | (target_ir << irlen_before)
+            | bypass_before
+        )
 
         return (total_bits, tdi)
 
@@ -312,8 +321,8 @@ class JtagChainConfig:
         t = self.target_index
 
         # Each non-target TAP in BYPASS = 1 DR bit
-        dr_pre_bits  = t             # TAPs before target
-        dr_post_bits = n - t - 1     # TAPs after target
+        dr_pre_bits = t  # TAPs before target
+        dr_post_bits = n - t - 1  # TAPs after target
 
         total_bits = dr_pre_bits + target_dr_bits + dr_post_bits
 
@@ -322,8 +331,7 @@ class JtagChainConfig:
 
         return (total_bits, tdi)
 
-    def compose_tdo(self, target_tdo: int, target_bits: int,
-                    target_mask: int) -> tuple:
+    def compose_tdo(self, target_tdo: int, target_bits: int, target_mask: int) -> tuple:
         """Given the expected target TAP TDO value and bit-width, return the
         full daisy-chain TDO as ``(full_tdo, full_mask)``.
 
@@ -373,6 +381,7 @@ class JtagChainConfig:
 # SVF Command Generator
 # =============================================================================
 
+
 class SvfGenerator:
     """Generates well-formatted SVF (Serial Vector Format) commands.
 
@@ -383,46 +392,47 @@ class SvfGenerator:
     """
 
     # ---- JTAG Instruction Register codes (4-bit for JTAG-DP) ---------------
-    IR_IDCODE = 0xE   # IDCODE register access
-    IR_DPACC  = 0xA   # Debug Port access
-    IR_APACC  = 0xB   # Access Port access
-    IR_ABORT  = 0x8   # Abort register
+    IR_IDCODE = 0xE  # IDCODE register access
+    IR_DPACC = 0xA  # Debug Port access
+    IR_APACC = 0xB  # Access Port access
+    IR_ABORT = 0x8  # Abort register
 
     # ---- DP register addresses (A[3:2] encoding within DPACC DR) ----------
-    DP_IDCODE_ABORT = 0x0   # Read: IDCODE;  Write: ABORT
-    DP_CTRL_STAT    = 0x1   # Control / Status
-    DP_SELECT       = 0x2   # AP Select
-    DP_RDBUFF       = 0x3   # Read Buffer (pipeline flush)
+    DP_IDCODE_ABORT = 0x0  # Read: IDCODE;  Write: ABORT
+    DP_CTRL_STAT = 0x1  # Control / Status
+    DP_SELECT = 0x2  # AP Select
+    DP_RDBUFF = 0x3  # Read Buffer (pipeline flush)
 
     # ---- AP register addresses (A[3:2] encoding, bank 0) ------------------
-    AP_CSW = 0x0   # Control / Status Word
-    AP_TAR = 0x1   # Transfer Address Register
-    AP_DRW = 0x3   # Data Read / Write
+    AP_CSW = 0x0  # Control / Status Word
+    AP_LTAR = 0x1  # Transfer Address Register (lower 32 bits)
+    AP_HTAR = 0x2  # Transfer Address Register (upper 32 bits, 64-bit mode)
+    AP_DRW = 0x3  # Data Read / Write
 
     # ---- DP.CTRL/STAT bit definitions ------------------------------------
-    CSYSPWRUPREQ = 1 << 30   # System power-up request
-    CDBGPWRUPREQ = 1 << 28   # Debug power-up request
-    CSYSPWRUPACK = 1 << 31   # System power-up acknowledge (read-only)
-    CDBGPWRUPACK = 1 << 29   # Debug power-up acknowledge  (read-only)
-    STICKYERR    = 1 << 5    # Sticky error flag
-    TRNCNT_MASK  = 0xFFF     # Turnaround counter (bits 11:0)
-    TRNCNT_VAL   = 0x200     # Recommended: 512 TCK cycles
+    CSYSPWRUPREQ = 1 << 30  # System power-up request
+    CDBGPWRUPREQ = 1 << 28  # Debug power-up request
+    CSYSPWRUPACK = 1 << 31  # System power-up acknowledge (read-only)
+    CDBGPWRUPACK = 1 << 29  # Debug power-up acknowledge  (read-only)
+    STICKYERR = 1 << 5  # Sticky error flag
+    TRNCNT_MASK = 0xFFF  # Turnaround counter (bits 11:0)
+    TRNCNT_VAL = 0x200  # Recommended: 512 TCK cycles
 
     # ---- AP.CSW bit definitions -------------------------------------------
-    CSW_SIZE_8BIT    = 0x0
-    CSW_SIZE_16BIT   = 0x1
-    CSW_SIZE_32BIT   = 0x2
-    CSW_SIZE_64BIT   = 0x3
-    CSW_ADDRINC_OFF    = 0 << 4   # No auto-increment
-    CSW_ADDRINC_SINGLE = 1 << 4   # Single increment after access
-    CSW_ADDRINC_PACKED = 2 << 4   # Packed transfers
-    CSW_DEVICEEN       = 1 << 6   # Device enabled
-    CSW_DBGSWENABLE    = 1 << 31  # Debug software enable (ADIv6)
-    CSW_HPROT_DATA     = 3 << 24  # AHB HPROT: data access, non-cacheable
+    CSW_SIZE_8BIT = 0x0
+    CSW_SIZE_16BIT = 0x1
+    CSW_SIZE_32BIT = 0x2
+    CSW_SIZE_64BIT = 0x3
+    CSW_ADDRINC_OFF = 0 << 4  # No auto-increment
+    CSW_ADDRINC_SINGLE = 1 << 4  # Single increment after access
+    CSW_ADDRINC_PACKED = 2 << 4  # Packed transfers
+    CSW_DEVICEEN = 1 << 6  # Device enabled
+    CSW_DBGSWENABLE = 1 << 31  # Debug software enable (ADIv6)
+    CSW_HPROT_DATA = 3 << 24  # AHB HPROT: data access, non-cacheable
 
-    def __init__(self,
-                 output_file: Optional[str] = None,
-                 chain: Optional[JtagChainConfig] = None):
+    def __init__(
+        self, output_file: Optional[str] = None, chain: Optional[JtagChainConfig] = None
+    ):
         """Open output stream (file or stdout).
 
         Args:
@@ -473,9 +483,13 @@ class SvfGenerator:
         self.jtag_dpacc()
         self._sdr(35, dr, comment=comment)
 
-    def dp_read(self, addr: int, comment: str = "",
-                tdo_expected: Optional[int] = None,
-                tdo_mask: Optional[int] = None):
+    def dp_read(
+        self,
+        addr: int,
+        comment: str = "",
+        tdo_expected: Optional[int] = None,
+        tdo_mask: Optional[int] = None,
+    ):
         """Initiate read from DP register at *addr*.
 
         The actual read data appears on TDO during the **next** DPACC/APACC
@@ -489,8 +503,7 @@ class SvfGenerator:
         """
         dr = self._make_dp_ap_dr(addr, rnw=1, data=0)
         self.jtag_dpacc()
-        self._sdr(35, dr, comment=comment,
-                  tdo=tdo_expected, tdo_mask=tdo_mask)
+        self._sdr(35, dr, comment=comment, tdo=tdo_expected, tdo_mask=tdo_mask)
 
     def ap_write(self, addr: int, data: int, comment: str = ""):
         """Write *data* to AP register at *addr* (A[3:2] = 0-3)."""
@@ -536,7 +549,7 @@ class SvfGenerator:
             _hex(0xA, 8)   -> "0A"
             _hex(0x91A2B3C0, 35) -> "0091A2B3C0"  (9 nibbles for 35 bits)
         """
-        nibbles = (bits + 3) // 4   # round up to full nibbles
+        nibbles = (bits + 3) // 4  # round up to full nibbles
         mask = (1 << bits) - 1
         return format(value & mask, f"0{nibbles}X")
 
@@ -553,7 +566,8 @@ class SvfGenerator:
     def _emit_header(self):
         """Emit the SVF preamble that every compliant SVF file requires."""
         chain_desc = self._chain.summary
-        self._f.write(textwrap.dedent(f"""\
+        self._f.write(
+            textwrap.dedent(f"""\
             // ============================================================================
             //  SVF — Serial Vector Format
             //  Target:  ARM Cortex-R52 (ARM IHI0031H / ADIv6)
@@ -564,7 +578,8 @@ class SvfGenerator:
             ENDIR IDLE;
             ENDDR IDLE;
             STATE RESET IDLE;
-        """).lstrip())
+        """).lstrip()
+        )
 
     def _sir(self, target_bits: int, target_tdi: int):
         """Scan Instruction Register — set target TAP IR to *target_tdi*.
@@ -573,11 +588,18 @@ class SvfGenerator:
         (all-1s) and the SIR length is extended accordingly.
         """
         bits, tdi = self._chain.compose_sir(target_tdi, target_bits)
-        self._emit(f"SIR {bits} TDI ({self._hex(tdi, bits)}) "
-                   f"SMASK ({self._mask(bits)});")
+        self._emit(
+            f"SIR {bits} TDI ({self._hex(tdi, bits)}) SMASK ({self._mask(bits)});"
+        )
 
-    def _sdr(self, target_bits: int, target_tdi: int, comment: str = "",
-             tdo: Optional[int] = None, tdo_mask: Optional[int] = None):
+    def _sdr(
+        self,
+        target_bits: int,
+        target_tdi: int,
+        comment: str = "",
+        tdo: Optional[int] = None,
+        tdo_mask: Optional[int] = None,
+    ):
         """Scan Data Register — shift *target_tdi* into the target TAP DR.
 
         When a daisy chain is configured, non-target TAPs in BYPASS add
@@ -591,13 +613,13 @@ class SvfGenerator:
             tdo_mask: TDO comparison mask (1=check, 0=ignore).
         """
         bits, tdi = self._chain.compose_sdr(target_tdi, target_bits)
-        parts = (f"SDR {bits} TDI ({self._hex(tdi, bits)}) "
-                 f"SMASK ({self._mask(bits)})")
+        parts = f"SDR {bits} TDI ({self._hex(tdi, bits)}) SMASK ({self._mask(bits)})"
         if tdo is not None and tdo_mask is not None:
-            full_tdo, full_mask = self._chain.compose_tdo(
-                tdo, target_bits, tdo_mask)
-            parts += (f" TDO ({self._hex(full_tdo, bits)}) "
-                      f"MASK ({self._hex(full_mask, bits)})")
+            full_tdo, full_mask = self._chain.compose_tdo(tdo, target_bits, tdo_mask)
+            parts += (
+                f" TDO ({self._hex(full_tdo, bits)}) "
+                f"MASK ({self._hex(full_mask, bits)})"
+            )
         tail = f"  // {comment}" if comment else ""
         self._emit(f"{parts};{tail}")
 
@@ -605,6 +627,7 @@ class SvfGenerator:
 # =============================================================================
 # High-Level Sequence Generator
 # =============================================================================
+
 
 class CortexR52SvfBuilder:
     """Orchestrates the full SVF sequence for Cortex-R52 memory download.
@@ -616,25 +639,28 @@ class CortexR52SvfBuilder:
     """
 
     # ACK encoding: OK = 0b010 in both ADIv5 and ADIv6.
-    ACK_OK   = 0x2   # OK response
-    ACK_MASK = 0x7   # verify all 3 ACK bits
+    ACK_OK = 0x2  # OK response
+    ACK_MASK = 0x7  # verify all 3 ACK bits
 
     # Known DP IDCODE values for common implementations
     # (Actual value depends on silicon revision; override with --idcode)
     CORTEX_R52_BASE_CID = 0x6BA02477  # Cortex-R52 r1p0
 
-    def __init__(self,
-                 bin_path: Optional[str] = None,
-                 base_addr: Optional[int] = None,
-                 output_path: Optional[str] = None,
-                 ap_sel: int = 0,
-                 data_width: int = 32,
-                 dp_idcode: Optional[int] = None,
-                 verify: bool = False,
-                 verbose: bool = False,
-                 chain_config_path: Optional[str] = None,
-                 adi_version: int = 6,
-                 cmd_list: Optional[List[MemCmd]] = None):
+    def __init__(
+        self,
+        bin_path: Optional[str] = None,
+        base_addr: Optional[int] = None,
+        output_path: Optional[str] = None,
+        ap_sel: int = 0,
+        data_width: int = 32,
+        dp_idcode: Optional[int] = None,
+        verify: bool = False,
+        verbose: bool = False,
+        chain_config_path: Optional[str] = None,
+        adi_version: int = 6,
+        cmd_list: Optional[List[MemCmd]] = None,
+        addr64: bool = False,
+    ):
         self.bin_path = bin_path
         self.base_addr = base_addr
         self.output_path = output_path
@@ -646,6 +672,10 @@ class CortexR52SvfBuilder:
         self.chain_config_path = chain_config_path
         self.adi_version = adi_version
         self.cmd_list = cmd_list
+        self.addr64 = addr64
+        # TAR de-duplication: track last-written {lo, hi} to skip redundant writes
+        self._last_tar_lo: Optional[int] = None
+        self._last_tar_hi: Optional[int] = None
 
         if data_width not in (8, 16, 32):
             raise ValueError("data_width must be 8, 16, or 32")
@@ -656,11 +686,9 @@ class CortexR52SvfBuilder:
         has_bin = self.bin_path is not None
         has_cmd = self.cmd_list is not None
         if has_bin and has_cmd:
-            raise ValueError(
-                "Provide either a .bin file or --cmds, not both.")
+            raise ValueError("Provide either a .bin file or --cmds, not both.")
         if not has_bin and not has_cmd:
-            raise ValueError(
-                "Provide either a .bin file or --cmds.")
+            raise ValueError("Provide either a .bin file or --cmds.")
         if has_bin and self.base_addr is None:
             raise ValueError("--addr is required for .bin file mode.")
 
@@ -684,15 +712,55 @@ class CortexR52SvfBuilder:
                 (suitable for random-access command files where TAR is
                 set explicitly before each access).
         """
-        addrinc = (SvfGenerator.CSW_ADDRINC_SINGLE if auto_increment
-                   else SvfGenerator.CSW_ADDRINC_OFF)
-        csw = (SvfGenerator.CSW_DEVICEEN |
-               addrinc |
-               SvfGenerator.CSW_HPROT_DATA |
-               (self._csw_size_field()))
+        addrinc = (
+            SvfGenerator.CSW_ADDRINC_SINGLE
+            if auto_increment
+            else SvfGenerator.CSW_ADDRINC_OFF
+        )
+        csw = (
+            SvfGenerator.CSW_DEVICEEN
+            | addrinc
+            | SvfGenerator.CSW_HPROT_DATA
+            | (self._csw_size_field())
+        )
         if self.adi_version >= 6:
             csw |= SvfGenerator.CSW_DBGSWENABLE
         return csw
+
+    # ------------------------------------------------------------------
+    # TAR address writing (with 64-bit support and de-duplication)
+    # ------------------------------------------------------------------
+
+    def _write_tar(self, g: SvfGenerator, addr: int, label: str = ""):
+        """Write AP.TAR (and AP.TAR2 for 64-bit) — skip if unchanged.
+
+        Splits *addr* into upper/lower 32-bit halves.  Only emits APACC
+        writes for halves that differ from the last written value.
+
+        Args:
+            g:     SvfGenerator instance.
+            addr:  Full 64-bit (or 32-bit) target address.
+            label: Optional progress label (e.g. ``"[3/16]"``).
+        """
+        label_prefix = f"{label} " if label else ""
+        lo = addr & 0xFFFFFFFF
+        hi = (addr >> 32) & 0xFFFFFFFF
+
+        if not self.addr64 and hi != 0:
+            raise ValueError("Must use --addr64 for addresses above 32 bits")
+
+        if self.addr64 and hi != self._last_tar_hi:
+            g.ap_write(
+                SvfGenerator.AP_HTAR, hi, f"{label_prefix}TAR2 ← 0x{hi:08X}  (upper)"
+            )
+            self._last_tar_hi = hi
+
+        if lo != self._last_tar_lo:
+            comment = f"{label_prefix}TAR ← 0x{lo:08X}"
+            if self.addr64:
+                comment += f"  (lower, full=0x{addr:016X})"
+            g.ap_write(SvfGenerator.AP_LTAR, lo, comment)
+            self._last_tar_lo = lo
 
     # ------------------------------------------------------------------
     # Shared setup (JTAG reset, power-up, AP selection, CSW)
@@ -715,17 +783,25 @@ class CortexR52SvfBuilder:
         g.comment("=" * 70)
         g.blank()
 
-        ctrl_stat_write = (SvfGenerator.CDBGPWRUPREQ |
-                           SvfGenerator.CSYSPWRUPREQ |
-                           SvfGenerator.TRNCNT_VAL)
-        g.dp_write(SvfGenerator.DP_CTRL_STAT, ctrl_stat_write,
-                   "Request CDBGPWRUP + CSYSPWRUP, TRNCNT=512")
+        ctrl_stat_write = (
+            SvfGenerator.CDBGPWRUPREQ
+            | SvfGenerator.CSYSPWRUPREQ
+            | SvfGenerator.TRNCNT_VAL
+        )
+        g.dp_write(
+            SvfGenerator.DP_CTRL_STAT,
+            ctrl_stat_write,
+            "Request CDBGPWRUP + CSYSPWRUP, TRNCNT=512",
+        )
         g.runtest(50)
 
-        g.dp_read(SvfGenerator.DP_CTRL_STAT,
-                  "Read CTRL/STAT (result in next transaction)")
-        g.dp_read(SvfGenerator.DP_RDBUFF,
-                  "Read RDBUFF — TDO = CTRL/STAT value; check ACK bits")
+        g.dp_read(
+            SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (result in next transaction)"
+        )
+        g.dp_read(
+            SvfGenerator.DP_RDBUFF,
+            "Read RDBUFF — TDO = CTRL/STAT value; check ACK bits",
+        )
         g.runtest(10)
 
         # Phase 3 — Select MEM-AP
@@ -735,8 +811,11 @@ class CortexR52SvfBuilder:
         g.blank()
 
         select_val = (self.ap_sel & 0xFF) << 24
-        g.dp_write(SvfGenerator.DP_SELECT, select_val,
-                   f"SELECT APSEL={self.ap_sel}, APBANKSEL=0")
+        g.dp_write(
+            SvfGenerator.DP_SELECT,
+            select_val,
+            f"SELECT APSEL={self.ap_sel}, APBANKSEL=0",
+        )
         g.runtest(10)
 
         # Phase 4 — Configure CSW
@@ -769,10 +848,13 @@ class CortexR52SvfBuilder:
         remainder = len(blob) % word_bytes
         if remainder:
             pad = word_bytes - remainder
-            blob += b'\x00' * pad
+            blob += b"\x00" * pad
             if self.verbose:
-                print(f"[INFO] Padded binary with {pad} zero-bytes to "
-                      f"{word_bytes}-byte alignment", file=sys.stderr)
+                print(
+                    f"[INFO] Padded binary with {pad} zero-bytes to "
+                    f"{word_bytes}-byte alignment",
+                    file=sys.stderr,
+                )
 
         # Unpack into words
         if self.data_width == 32:
@@ -788,8 +870,10 @@ class CortexR52SvfBuilder:
         if self.chain_config_path:
             chain = JtagChainConfig.from_json_file(self.chain_config_path)
             if self.verbose:
-                print(f"[INFO] JTAG chain config: {self.chain_config_path}",
-                      file=sys.stderr)
+                print(
+                    f"[INFO] JTAG chain config: {self.chain_config_path}",
+                    file=sys.stderr,
+                )
                 print(f"[INFO]   {chain.summary}", file=sys.stderr)
 
         gen = SvfGenerator(self.output_path, chain=chain)
@@ -798,16 +882,16 @@ class CortexR52SvfBuilder:
         # --- Shared setup phases 1–4 -------------------------------------------
         csw = self._csw_value(auto_increment=True)
         size_name = {8: "8-bit", 16: "16-bit", 32: "32-bit"}[self.data_width]
-        self._emit_setup_phases(g, csw,
-                                f"CSW: {size_name}, auto-increment, DeviceEn, DbgSwEnable")
+        self._emit_setup_phases(
+            g, csw, f"CSW: {size_name}, auto-increment, DeviceEn, DbgSwEnable"
+        )
 
         # ==================================================================
         #  PHASE 5 — Write Binary Data to Memory
         # ==================================================================
         g.comment("=" * 70)
         g.comment(f"PHASE 5: Write {len(blob)} bytes to 0x{self.base_addr:08X}")
-        g.comment(f"        Data width: {self.data_width}-bit, "
-                  f"Words: {len(words)}")
+        g.comment(f"        Data width: {self.data_width}-bit, Words: {len(words)}")
         g.comment("        Mode: auto-increment (TAR set once)")
         g.comment("=" * 70)
         g.blank()
@@ -815,14 +899,16 @@ class CortexR52SvfBuilder:
         word_bytes = self.data_width // 8
 
         # TAR auto-increments after each DRW access — set it once
-        g.ap_write(SvfGenerator.AP_TAR, self.base_addr,
-                   f"TAR ← 0x{self.base_addr:08X}  (auto-increment mode)")
+        self._write_tar(g, self.base_addr, label="(auto-increment mode)")
 
         for idx, word in enumerate(words):
-            g.ap_write(SvfGenerator.AP_DRW, word,
-                       f"DRW ← 0x{word:0{self.data_width // 4}X}  "
-                       f"→ 0x{self.base_addr + idx * word_bytes:08X}  "
-                       f"[{idx}/{len(words) - 1}]")
+            g.ap_write(
+                SvfGenerator.AP_DRW,
+                word,
+                f"DRW ← 0x{word:0{self.data_width // 4}X}  "
+                f"→ 0x{self.base_addr + idx * word_bytes:08X}  "
+                f"[{idx}/{len(words) - 1}]",
+            )
 
             # Periodic progress annotations
             chunk = max(len(words) // 20, 1)
@@ -830,8 +916,7 @@ class CortexR52SvfBuilder:
                 pct = idx * 100 // len(words)
                 g.comment(f"  ... {pct}% complete ({idx}/{len(words)} words)")
 
-        g.comment(f"  ✓ Write complete — {len(words)} words, "
-                  f"{len(blob)} bytes total")
+        g.comment(f"  ✓ Write complete — {len(words)} words, {len(blob)} bytes total")
         g.blank()
 
         # ==================================================================
@@ -842,8 +927,10 @@ class CortexR52SvfBuilder:
 
             g.comment("=" * 70)
             g.comment("PHASE 6: Read-Back Verification (with TDO check)")
-            g.comment(f"  Protocol: ADIv{self.adi_version}  "
-                      f"(ACK OK = 0b{self.ACK_OK:03b}, mask = 0b{self.ACK_MASK:03b})")
+            g.comment(
+                f"  Protocol: ADIv{self.adi_version}  "
+                f"(ACK OK = 0b{self.ACK_OK:03b}, mask = 0b{self.ACK_MASK:03b})"
+            )
             g.comment("  Each SDR includes TDO(expected) MASK — the SVF player")
             g.comment("  compares actual TDO against expected.  Both DATA and ACK")
             g.comment("  bits are verified.  Mismatches are reported immediately.")
@@ -851,25 +938,30 @@ class CortexR52SvfBuilder:
             g.blank()
 
             # TAR auto-increments after each DRW read — set it once
-            g.ap_write(SvfGenerator.AP_TAR, self.base_addr,
-                       f"TAR ← 0x{self.base_addr:08X}  (auto-increment mode, verify)")
+            # Reset tracking since auto-increment has moved hardware TAR
+            self._last_tar_lo = None
+            self._write_tar(g, self.base_addr, label="(auto-increment mode, verify)")
 
             for idx, expected_word in enumerate(words):
                 addr = self.base_addr + idx * word_bytes
 
                 # AP read DRW — request; TDO here is the *previous* pipelined
                 # result (stale), so we do NOT verify TDO on this transaction.
-                g.ap_read(SvfGenerator.AP_DRW,
-                          f"Read DRW → 0x{addr:08X}  (request, TDO=stale)")
+                g.ap_read(
+                    SvfGenerator.AP_DRW,
+                    f"Read DRW → 0x{addr:08X}  (request, TDO=stale)",
+                )
 
                 # DP read RDBUFF — TDO contains the DRW data from the AP read
                 # above.  Verify both data and ACK bits.
                 tdo_expected = (expected_word << 3) | self.ACK_OK
-                g.dp_read(SvfGenerator.DP_RDBUFF,
-                          f"RDBUFF TDO ?= 0x{expected_word:08X} (+ACK=OK)  "
-                          f"[{idx}/{len(words) - 1}]",
-                          tdo_expected=tdo_expected,
-                          tdo_mask=TDO_MASK)
+                g.dp_read(
+                    SvfGenerator.DP_RDBUFF,
+                    f"RDBUFF TDO ?= 0x{expected_word:08X} (+ACK=OK)  "
+                    f"[{idx}/{len(words) - 1}]",
+                    tdo_expected=tdo_expected,
+                    tdo_mask=TDO_MASK,
+                )
 
                 # Periodic progress annotations
                 vchunk = max(len(words) // 20, 1)
@@ -898,17 +990,21 @@ class CortexR52SvfBuilder:
             reads = sum(1 for c in self.cmd_list if c.op == Op.R)
             writes = sum(1 for c in self.cmd_list if c.op == Op.W)
             waits = sum(1 for c in self.cmd_list if c.op == Op.T)
-            print(f"[INFO] Command file: {writes} writes, {reads} reads, "
-                  f"{waits} waits ({len(self.cmd_list)} total)",
-                  file=sys.stderr)
+            print(
+                f"[INFO] Command file: {writes} writes, {reads} reads, "
+                f"{waits} waits ({len(self.cmd_list)} total)",
+                file=sys.stderr,
+            )
 
         # --- Build chain configuration -----------------------------------------
         chain = None
         if self.chain_config_path:
             chain = JtagChainConfig.from_json_file(self.chain_config_path)
             if self.verbose:
-                print(f"[INFO] JTAG chain config: {self.chain_config_path}",
-                      file=sys.stderr)
+                print(
+                    f"[INFO] JTAG chain config: {self.chain_config_path}",
+                    file=sys.stderr,
+                )
                 print(f"[INFO]   {chain.summary}", file=sys.stderr)
 
         gen = SvfGenerator(self.output_path, chain=chain)
@@ -917,8 +1013,9 @@ class CortexR52SvfBuilder:
         # --- Shared setup phases 1–4 -------------------------------------------
         size_name = {8: "8-bit", 16: "16-bit", 32: "32-bit"}[self.data_width]
         csw = self._csw_value(auto_increment=False)
-        self._emit_setup_phases(g, csw,
-                                f"CSW: {size_name}, ADDRINC_OFF, DeviceEn, DbgSwEnable")
+        self._emit_setup_phases(
+            g, csw, f"CSW: {size_name}, ADDRINC_OFF, DeviceEn, DbgSwEnable"
+        )
 
         # ==================================================================
         #  PHASE 5 — Execute Memory Commands
@@ -926,8 +1023,10 @@ class CortexR52SvfBuilder:
         g.comment("=" * 70)
         waits_count = sum(1 for c in self.cmd_list if c.op == Op.T)
         rw_count = len(self.cmd_list) - waits_count
-        g.comment(f"PHASE 5: Execute {len(self.cmd_list)} commands "
-                  f"({rw_count} R/W, {waits_count} wait)")
+        g.comment(
+            f"PHASE 5: Execute {len(self.cmd_list)} commands "
+            f"({rw_count} R/W, {waits_count} wait)"
+        )
         g.comment(f"        Data width: {self.data_width}-bit")
         g.comment("        Mode: explicit TAR per access (ADDRINC_OFF)")
         g.comment("=" * 70)
@@ -945,48 +1044,53 @@ class CortexR52SvfBuilder:
 
             if cmd.op == Op.T:
                 # --- Wait / delay ---
-                g.comment(f"{label} RUNTEST {cmd.data} TCK "
-                          f"(wait {cmd.data} cycles)")
+                g.comment(f"{label} RUNTEST {cmd.data} TCK (wait {cmd.data} cycles)")
                 g.runtest(cmd.data)
                 g.blank()
                 continue
 
             if cmd.op == Op.R:
                 # --- Read operation ---
-                g.ap_write(SvfGenerator.AP_TAR, cmd.addr,
-                           f"{label} TAR ← 0x{cmd.addr:08X}")
+                self._write_tar(g, cmd.addr, label)
 
                 # Initiate AP DRW read
-                g.ap_read(SvfGenerator.AP_DRW,
-                          f"{label} Read DRW from 0x{cmd.addr:08X}  "
-                          f"(TDO=stale)")
+                g.ap_read(
+                    SvfGenerator.AP_DRW,
+                    f"{label} Read DRW from 0x{cmd.addr:08X}  (TDO=stale)",
+                )
 
                 if cmd.verify:
                     # Verify via pipelined RDBUFF read
                     tdo_expected = (cmd.data << 3) | self.ACK_OK
-                    g.dp_read(SvfGenerator.DP_RDBUFF,
-                              f"{label} RDBUFF TDO ?= 0x{cmd.data:0{self.data_width // 4}X} "
-                              f"(+ACK=OK)",
-                              tdo_expected=tdo_expected,
-                              tdo_mask=TDO_MASK)
+                    g.dp_read(
+                        SvfGenerator.DP_RDBUFF,
+                        f"{label} RDBUFF TDO ?= 0x{cmd.data:0{self.data_width // 4}X} "
+                        f"(+ACK=OK)",
+                        tdo_expected=tdo_expected,
+                        tdo_mask=TDO_MASK,
+                    )
                 else:
                     # Read without verification
-                    g.dp_read(SvfGenerator.DP_RDBUFF,
-                              f"{label} RDBUFF (TDO not checked)")
+                    g.dp_read(
+                        SvfGenerator.DP_RDBUFF, f"{label} RDBUFF (TDO not checked)"
+                    )
             else:
                 # --- Write operation ---
-                g.ap_write(SvfGenerator.AP_TAR, cmd.addr,
-                           f"{label} TAR ← 0x{cmd.addr:08X}")
-                g.ap_write(SvfGenerator.AP_DRW, cmd.data,
-                           f"{label} DRW ← 0x{cmd.data:0{self.data_width // 4}X}  "
-                           f"→ 0x{cmd.addr:08X}")
+                self._write_tar(g, cmd.addr, label)
+                g.ap_write(
+                    SvfGenerator.AP_DRW,
+                    cmd.data,
+                    f"{label} DRW ← 0x{cmd.data:0{self.data_width // 4}X}  "
+                    f"→ 0x{cmd.addr:08X}",
+                )
 
             # Periodic progress
             chunk = max(len(self.cmd_list) // 20, 1)
             if (idx + 1) > 0 and (idx + 1) % chunk == 0:
                 pct = (idx + 1) * 100 // len(self.cmd_list)
-                g.comment(f"  ... {pct}% complete "
-                          f"({idx + 1}/{len(self.cmd_list)} commands)")
+                g.comment(
+                    f"  ... {pct}% complete ({idx + 1}/{len(self.cmd_list)} commands)"
+                )
 
         g.comment(f"  ✓ All {len(self.cmd_list)} commands executed")
         g.blank()
@@ -1020,13 +1124,15 @@ class CortexR52SvfBuilder:
 # CLI Entry Point
 # =============================================================================
 
+
 def _parse_address(s: str) -> int:
     """Parse a hex address string like '0x80000000' or '80000000'."""
     try:
         return int(s, 0)
     except ValueError:
         raise argparse.ArgumentTypeError(
-            f"Invalid address '{s}'.  Use hex (e.g., 0x80000000).")
+            f"Invalid address '{s}'.  Use hex (e.g., 0x80000000)."
+        )
 
 
 def main():
@@ -1091,7 +1197,8 @@ def main():
         help="Path to the .bin (raw binary) file to download.",
     )
     parser.add_argument(
-        "--cmds", "-C",
+        "--cmds",
+        "-C",
         default=None,
         metavar="CMDS.txt",
         help=(
@@ -1103,28 +1210,32 @@ def main():
 
     # ---- Address (required only for .bin mode) --------------------------------
     parser.add_argument(
-        "--addr", "-a",
+        "--addr",
+        "-a",
         default=None,
         type=_parse_address,
         help="Target memory base address in hex (e.g., 0x80000000).  "
-             "Required for .bin file mode, ignored for --cmds mode.",
+        "Required for .bin file mode, ignored for --cmds mode.",
     )
 
     # ---- Optional I/O ---------------------------------------------------------
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         default=None,
         help="Output SVF file path.  Default: stdout.",
     )
     parser.add_argument(
-        "--verbose", "-V",
+        "--verbose",
+        "-V",
         action="store_true",
         help="Print progress information to stderr.",
     )
 
     # ---- DAP configuration ----------------------------------------------------
     parser.add_argument(
-        "--ap", "-p",
+        "--ap",
+        "-p",
         type=int,
         default=0,
         help="MEM-AP selection index (APSEL, default: 0).",
@@ -1136,14 +1247,16 @@ def main():
         help="Expected DP IDCODE for verification (e.g., 0x6BA02477).",
     )
     parser.add_argument(
-        "--width", "-w",
+        "--width",
+        "-w",
         type=int,
         choices=[8, 16, 32],
         default=32,
         help="Memory access width in bits (8, 16, or 32).  Default: 32.",
     )
     parser.add_argument(
-        "--adi-version", "-A",
+        "--adi-version",
+        "-A",
         type=int,
         choices=[5, 6],
         default=6,
@@ -1156,7 +1269,8 @@ def main():
 
     # ---- JTAG chain -----------------------------------------------------------
     parser.add_argument(
-        "--chain", "-c",
+        "--chain",
+        "-c",
         default=None,
         metavar="CONFIG.json",
         help=(
@@ -1168,10 +1282,18 @@ def main():
 
     # ---- Features -------------------------------------------------------------
     parser.add_argument(
-        "--verify", "-v",
+        "--addr64",
+        action="store_true",
+        help="Enable 64-bit addressing mode.  Upper 32 bits of the address "
+        "are written to AP.TAR2 (register 0x2) before setting AP.TAR.  "
+        "Useful for targets with >4 GiB physical address space.",
+    )
+    parser.add_argument(
+        "--verify",
+        "-v",
         action="store_true",
         help="Include read-back verification sequence in the SVF output "
-             "(.bin mode only; for --cmds mode use the per-command Y flag).",
+        "(.bin mode only; for --cmds mode use the per-command Y flag).",
     )
 
     args = parser.parse_args()
@@ -1181,12 +1303,10 @@ def main():
     has_cmd = args.cmds is not None
 
     if has_bin and has_cmd:
-        print("Error: provide either a .bin file or --cmds, not both.",
-              file=sys.stderr)
+        print("Error: provide either a .bin file or --cmds, not both.", file=sys.stderr)
         sys.exit(1)
     if not has_bin and not has_cmd:
-        print("Error: provide either a .bin file or --cmds.",
-              file=sys.stderr)
+        print("Error: provide either a .bin file or --cmds.", file=sys.stderr)
         sys.exit(1)
 
     # ---- Validate .bin mode ---------------------------------------------------
@@ -1195,8 +1315,7 @@ def main():
 
     if has_bin:
         if not os.path.isfile(args.binfile):
-            print(f"Error: binary file not found — {args.binfile}",
-                  file=sys.stderr)
+            print(f"Error: binary file not found — {args.binfile}", file=sys.stderr)
             sys.exit(1)
 
         file_size = os.path.getsize(args.binfile)
@@ -1205,15 +1324,13 @@ def main():
             sys.exit(1)
 
         if args.addr is None:
-            print("Error: --addr is required for .bin file mode.",
-                  file=sys.stderr)
+            print("Error: --addr is required for .bin file mode.", file=sys.stderr)
             sys.exit(1)
 
     # ---- Validate --cmds mode -------------------------------------------------
     if has_cmd:
         if not os.path.isfile(args.cmds):
-            print(f"Error: command file not found — {args.cmds}",
-                  file=sys.stderr)
+            print(f"Error: command file not found — {args.cmds}", file=sys.stderr)
             sys.exit(1)
 
         try:
@@ -1223,42 +1340,49 @@ def main():
             sys.exit(1)
 
         if not cmd_list:
-            print("Error: command file contains no valid commands.",
-                  file=sys.stderr)
+            print("Error: command file contains no valid commands.", file=sys.stderr)
             sys.exit(1)
 
         if args.verify:
-            print("[WARNING] --verify is ignored in --cmds mode; "
-                  "use the per-command Y flag for read verification.",
-                  file=sys.stderr)
+            print(
+                "[WARNING] --verify is ignored in --cmds mode; "
+                "use the per-command Y flag for read verification.",
+                file=sys.stderr,
+            )
 
     # ---- Validate chain config ------------------------------------------------
     if args.chain and not os.path.isfile(args.chain):
-        print(f"Error: chain config file not found — {args.chain}",
-              file=sys.stderr)
+        print(f"Error: chain config file not found — {args.chain}", file=sys.stderr)
         sys.exit(1)
 
     if args.verbose:
         if has_bin:
-            print("[INFO] Mode          : .bin download",
-                  file=sys.stderr)
-            print(f"[INFO] Input file   : {args.binfile} ({file_size} bytes)",
-                  file=sys.stderr)
+            print("[INFO] Mode          : .bin download", file=sys.stderr)
+            print(
+                f"[INFO] Input file   : {args.binfile} ({file_size} bytes)",
+                file=sys.stderr,
+            )
             print(f"[INFO] Target addr  : 0x{args.addr:08X}", file=sys.stderr)
         else:
-            print("[INFO] Mode          : command file",
-                  file=sys.stderr)
-            print(f"[INFO] Command file : {args.cmds} "
-                  f"({len(cmd_list)} commands)", file=sys.stderr)
+            print("[INFO] Mode          : command file", file=sys.stderr)
+            print(
+                f"[INFO] Command file : {args.cmds} ({len(cmd_list)} commands)",
+                file=sys.stderr,
+            )
         print(f"[INFO] ADI version  : v{args.adi_version}", file=sys.stderr)
         print(f"[INFO] Data width   : {args.width}-bit", file=sys.stderr)
         print(f"[INFO] AP selection : APSEL={args.ap}", file=sys.stderr)
-        print(f"[INFO] JTAG chain   : {args.chain or '(none — single TAP)'}",
-              file=sys.stderr)
-        print(f"[INFO] Verify       : {'Yes' if args.verify else 'No'}",
-              file=sys.stderr)
-        print(f"[INFO] Output       : {args.output or '(stdout)'}",
-              file=sys.stderr)
+        print(
+            f"[INFO] JTAG chain   : {args.chain or '(none — single TAP)'}",
+            file=sys.stderr,
+        )
+        print(
+            f"[INFO] Verify       : {'Yes' if args.verify else 'No'}", file=sys.stderr
+        )
+        print(
+            f"[INFO] 64-bit addr  : {'Yes' if args.addr64 else 'No'}", file=sys.stderr
+        )
+        print(f"[INFO] Output       : {args.output or '(stdout)'}", file=sys.stderr)
 
     # ---- Generate -------------------------------------------------------------
     builder = CortexR52SvfBuilder(
@@ -1273,17 +1397,21 @@ def main():
         chain_config_path=args.chain,
         adi_version=args.adi_version,
         cmd_list=cmd_list,
+        addr64=args.addr64,
     )
 
     result = builder.generate()
 
     if args.verbose:
         if has_bin:
-            print(f"[INFO] SVF generation complete — {result} bytes payload.",
-                  file=sys.stderr)
+            print(
+                f"[INFO] SVF generation complete — {result} bytes payload.",
+                file=sys.stderr,
+            )
         else:
-            print(f"[INFO] SVF generation complete — {result} commands.",
-                  file=sys.stderr)
+            print(
+                f"[INFO] SVF generation complete — {result} commands.", file=sys.stderr
+            )
 
 
 if __name__ == "__main__":
