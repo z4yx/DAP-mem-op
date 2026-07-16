@@ -145,7 +145,7 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
     with open(path, "r") as fh:
         for lineno, raw in enumerate(fh, 1):
             line = raw.strip()
-            if not line or line.startswith("#"):
+            if not line or line.startswith("#") or line.startswith("//"):
                 continue
 
             parts = line.split()
@@ -160,7 +160,7 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
 
             # --- TCK wait: "0 <count> TCK" ---
             if addr == 0 and rw == "TCK":
-                tck = int(parts[1], 10)
+                tck = int(parts[1], 0)
                 if tck <= 0:
                     raise ValueError(
                         f"{path}:{lineno}: TCK count must be positive, "
