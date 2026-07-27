@@ -431,7 +431,10 @@ class SvfGenerator:
     CSW_HPROT_DATA = 3 << 24  # AHB HPROT: data access, non-cacheable
 
     def __init__(
-        self, output_file: Optional[str] = None, chain: Optional[JtagChainConfig] = None
+        self,
+        output_file: Optional[str] = None,
+        chain: Optional[JtagChainConfig] = None,
+        status_poll_count: int = 0,
     ):
         """Open output stream (file or stdout).
 
@@ -440,10 +443,16 @@ class SvfGenerator:
             chain: Optional JTAG daisy-chain configuration.  When provided,
                    all SIR/SDR operations are automatically extended to
                    account for non-target TAPs in BYPASS.
+            status_poll_count: Number of DP.CTRL/STAT status poll cycles to
+                   emit after each ``dp_write`` / ``dp_read`` operation.
+                   Each poll performs a complete pipelined read of the
+                   CTRL/STAT register to allow pending transactions to
+                   complete.  Default: 0 (no polling).
         """
         self._f = open(output_file, "w") if output_file else sys.stdout
         self._indent = 0
         self._chain = chain or JtagChainConfig.single_tap()
+        self._status_poll_count = status_poll_count
         self._emit_header()
 
     # ------------------------------------------------------------------
@@ -504,6 +513,26 @@ class SvfGenerator:
         dr = self._make_dp_ap_dr(addr, rnw=1, data=0)
         self.jtag_dpacc()
         self._sdr(35, dr, comment=comment, tdo=tdo_expected, tdo_mask=tdo_mask)
+
+    def dp_status_poll(self):
+        """Emit one complete DP.CTRL/STAT status poll cycle (pipelined read).
+
+        Performs a full pipelined read of the DP status register:
+
+            1. SIR(DPACC) + SDR(read CTRL/STAT)  — initiate the read
+            2. SIR(DPACC) + SDR(read RDBUFF)      — retrieve the value
+
+        This allows pending AP/DP transactions to complete and provides
+        a synchronisation point in the JTAG command stream.  Intended for
+        use after ``dp_write`` / ``dp_read`` when *status_poll_count* > 0.
+        """
+        read_ctrl = self._make_dp_ap_dr(SvfGenerator.DP_CTRL_STAT, rnw=1, data=0)
+        self.jtag_dpacc()
+        self._sdr(35, read_ctrl, comment="Status poll: CTRL/STAT read (initiate)")
+
+        read_rdbuff = self._make_dp_ap_dr(SvfGenerator.DP_RDBUFF, rnw=1, data=0)
+        self.jtag_dpacc()
+        self._sdr(35, read_rdbuff, comment="Status poll: RDBUFF read (retrieve)")
 
     def ap_write(self, addr: int, data: int, comment: str = ""):
         """Write *data* to AP register at *addr* (A[3:2] = 0-3)."""
@@ -660,6 +689,7 @@ class CortexR52SvfBuilder:
         adi_version: int = 6,
         cmd_list: Optional[List[MemCmd]] = None,
         addr64: bool = False,
+        status_poll_count: int = 0,
     ):
         self.bin_path = bin_path
         self.base_addr = base_addr
@@ -673,6 +703,7 @@ class CortexR52SvfBuilder:
         self.adi_version = adi_version
         self.cmd_list = cmd_list
         self.addr64 = addr64
+        self.status_poll_count = status_poll_count
         # TAR de-duplication: track last-written {lo, hi} to skip redundant writes
         self._last_tar_lo: Optional[int] = None
         self._last_tar_hi: Optional[int] = None
@@ -754,6 +785,9 @@ class CortexR52SvfBuilder:
                 SvfGenerator.AP_HTAR, hi, f"{label_prefix}TAR2 ← 0x{hi:08X}  (upper)"
             )
             self._last_tar_hi = hi
+            g.dp_read(
+                SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (wait for last operation)"
+            )
 
         if lo != self._last_tar_lo:
             comment = f"{label_prefix}TAR ← 0x{lo:08X}"
@@ -761,6 +795,9 @@ class CortexR52SvfBuilder:
                 comment += f"  (lower, full=0x{addr:016X})"
             g.ap_write(SvfGenerator.AP_LTAR, lo, comment)
             self._last_tar_lo = lo
+            g.dp_read(
+                SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (wait for last operation)"
+            )
 
     # ------------------------------------------------------------------
     # Shared setup (JTAG reset, power-up, AP selection, CSW)
@@ -786,23 +823,23 @@ class CortexR52SvfBuilder:
         ctrl_stat_write = (
             SvfGenerator.CDBGPWRUPREQ
             | SvfGenerator.CSYSPWRUPREQ
-            | SvfGenerator.TRNCNT_VAL
+            # | SvfGenerator.TRNCNT_VAL
         )
         g.dp_write(
             SvfGenerator.DP_CTRL_STAT,
             ctrl_stat_write,
-            "Request CDBGPWRUP + CSYSPWRUP, TRNCNT=512",
+            "Request CDBGPWRUP + CSYSPWRUP",
         )
         g.runtest(50)
 
-        g.dp_read(
-            SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (result in next transaction)"
-        )
-        g.dp_read(
-            SvfGenerator.DP_RDBUFF,
-            "Read RDBUFF — TDO = CTRL/STAT value; check ACK bits",
-        )
-        g.runtest(10)
+        # g.dp_read(
+        #     SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (result in next transaction)"
+        # )
+        # g.dp_read(
+        #     SvfGenerator.DP_RDBUFF,
+        #     "Read RDBUFF — TDO = CTRL/STAT value; check ACK bits",
+        # )
+        # g.runtest(10)
 
         # Phase 3 — Select MEM-AP
         g.comment("=" * 70)
@@ -825,6 +862,9 @@ class CortexR52SvfBuilder:
         g.blank()
 
         g.ap_write(SvfGenerator.AP_CSW, csw, csw_desc)
+        g.dp_read(
+            SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (wait for last operation)"
+        )
         g.runtest(10)
 
     # ------------------------------------------------------------------
@@ -876,7 +916,10 @@ class CortexR52SvfBuilder:
                 )
                 print(f"[INFO]   {chain.summary}", file=sys.stderr)
 
-        gen = SvfGenerator(self.output_path, chain=chain)
+        gen = SvfGenerator(
+            self.output_path, chain=chain,
+            status_poll_count=self.status_poll_count,
+        )
         g = gen  # shorthand
 
         # --- Shared setup phases 1–4 -------------------------------------------
@@ -909,6 +952,8 @@ class CortexR52SvfBuilder:
                 f"→ 0x{self.base_addr + idx * word_bytes:08X}  "
                 f"[{idx}/{len(words) - 1}]",
             )
+            for _ in range(self.status_poll_count):
+                g.dp_status_poll()
 
             # Periodic progress annotations
             chunk = max(len(words) // 20, 1)
@@ -1007,7 +1052,10 @@ class CortexR52SvfBuilder:
                 )
                 print(f"[INFO]   {chain.summary}", file=sys.stderr)
 
-        gen = SvfGenerator(self.output_path, chain=chain)
+        gen = SvfGenerator(
+            self.output_path, chain=chain,
+            status_poll_count=self.status_poll_count,
+        )
         g = gen  # shorthand
 
         # --- Shared setup phases 1–4 -------------------------------------------
@@ -1083,6 +1131,8 @@ class CortexR52SvfBuilder:
                     f"{label} DRW ← 0x{cmd.data:0{self.data_width // 4}X}  "
                     f"→ 0x{cmd.addr:08X}",
                 )
+                for _ in range(self.status_poll_count):
+                    g.dp_status_poll()
 
             # Periodic progress
             chunk = max(len(self.cmd_list) // 20, 1)
@@ -1282,6 +1332,18 @@ def main():
 
     # ---- Features -------------------------------------------------------------
     parser.add_argument(
+        "--status-poll",
+        "-s",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Number of DP.CTRL/STAT status poll cycles to insert after "
+        "each DP register access (dp_write / dp_read).  Each poll performs "
+        "a complete pipelined read of the CTRL/STAT register, providing "
+        "synchronisation points to ensure pending memory transactions "
+        "complete before the next operation.  Default: 0 (no polling).",
+    )
+    parser.add_argument(
         "--addr64",
         action="store_true",
         help="Enable 64-bit addressing mode.  Upper 32 bits of the address "
@@ -1377,6 +1439,10 @@ def main():
             file=sys.stderr,
         )
         print(
+            f"[INFO] Status poll  : {args.status_poll} cycles after each DP access",
+            file=sys.stderr,
+        )
+        print(
             f"[INFO] Verify       : {'Yes' if args.verify else 'No'}", file=sys.stderr
         )
         print(
@@ -1398,6 +1464,7 @@ def main():
         adi_version=args.adi_version,
         cmd_list=cmd_list,
         addr64=args.addr64,
+        status_poll_count=args.status_poll,
     )
 
     result = builder.generate()
