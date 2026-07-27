@@ -660,9 +660,9 @@ class SvfGenerator:
         a synchronisation point in the JTAG command stream.  Intended for
         use after ``dp_write`` / ``dp_read`` when *status_poll_count* > 0.
         """
-        read_ctrl = self._make_dp_ap_dr(SvfGenerator.DP_CTRL_STAT, rnw=1, data=0)
-        self.jtag_dpacc()
-        self._sdr(35, read_ctrl, comment="Status poll: CTRL/STAT read (initiate)")
+        # read_ctrl = self._make_dp_ap_dr(SvfGenerator.DP_CTRL_STAT, rnw=1, data=0)
+        # self.jtag_dpacc()
+        # self._sdr(35, read_ctrl, comment="Status poll: CTRL/STAT read (initiate)")
 
         read_rdbuff = self._make_dp_ap_dr(SvfGenerator.DP_RDBUFF, rnw=1, data=0)
         self.jtag_dpacc()
@@ -1089,6 +1089,8 @@ class CortexR52SvfBuilder:
                     SvfGenerator.AP_DRW,
                     f"Read DRW → 0x{addr:08X}  (request, TDO=stale)",
                 )
+                for _ in range(self.status_poll_count):
+                    g.dp_status_poll()
 
                 # DP read RDBUFF — TDO contains the DRW data from the AP read
                 # above.  Verify both data and ACK bits.
@@ -1199,6 +1201,8 @@ class CortexR52SvfBuilder:
                     SvfGenerator.AP_DRW,
                     f"{label} Read DRW from 0x{cmd.addr:08X}  (TDO=stale)",
                 )
+                for _ in range(self.status_poll_count):
+                    g.dp_status_poll()
 
                 if cmd.verify:
                     # Verify via pipelined RDBUFF read
