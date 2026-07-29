@@ -562,7 +562,8 @@ class SvfGenerator:
     CSW_ADDRINC_PACKED = 2 << 4  # Packed transfers
     CSW_DEVICEEN = 1 << 6  # Device enabled
     CSW_DBGSWENABLE = 1 << 31  # Debug software enable (ADIv6)
-    CSW_HPROT_DATA = 3 << 24  # AHB HPROT: data access, non-cacheable
+    # CSW_HPROT_DATA = 3 << 24  # AHB HPROT: data access, non-cacheable
+    CSW_AXICACHE = 3 << 24 # AXI bufferable, modifiable
 
     def __init__(
         self,
@@ -843,8 +844,9 @@ class CortexR52SvfBuilder:
         )
         csw = (
             SvfGenerator.CSW_DEVICEEN
+            | SvfGenerator.STICKYERR # Clear by writing 1 to STICKYERR bit
             | addrinc
-            | SvfGenerator.CSW_HPROT_DATA
+            # | SvfGenerator.CSW_HPROT_DATA
             | (self._csw_size_field())
         )
         if self.adi_version >= 6:
