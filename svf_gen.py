@@ -52,11 +52,11 @@ Memory Command Sequence (command-file mode)
 
 Command File Format
 -------------------
-    <addr_hex>  <data_hex>  <W|R>  [Y]
+    <addr_hex>  <data_hex>  <W|R>  [Y]  [WAIT<n>]
     0  <count>  TCK
     # This is a comment line
-    0x80000000  DEADBEEF  W
-    0x80000004  12345678  R  Y
+    0x80000000  DEADBEEF  W       WAIT50
+    0x80000004  12345678  R  Y    WAIT100
     0x80001000  AABBCCDD  R
     0  100  TCK
 
@@ -99,19 +99,25 @@ class MemCmd:
     """A single command parsed from a text command file.
 
     Fields:
-        addr:   Target memory address (32-bit).  Ignored for wait commands.
-        data:   Data value to write, expected data on read, or TCK cycle
-                count for wait commands.
-        op:     Operation type — ``Op.R`` (read), ``Op.W`` (write), or
-                ``Op.T`` (TCK wait).
-        verify: For reads: whether to compare TDO against *data* (Y/N).
-                Only meaningful when *op* is ``Op.R``.
+        addr:        Target memory address (32-bit).  Ignored for wait
+                     commands.
+        data:        Data value to write, expected data on read, or TCK
+                     cycle count for wait commands.
+        op:          Operation type — ``Op.R`` (read), ``Op.W`` (write),
+                     or ``Op.T`` (TCK wait).
+        verify:      For reads: whether to compare TDO against *data*
+                     (Y/N).  Only meaningful when *op* is ``Op.R``.
+        wait_cycles: Optional per-command TCK wait cycles after the
+                     access.  When set (not None), overrides the global
+                     ``--wait-cycles`` setting for this command only.
+                     Only meaningful when *op* is ``Op.R`` or ``Op.W``.
     """
 
     addr: int
     data: int
     op: Op
     verify: bool = False
+    wait_cycles: Optional[int] = None
 
 
 def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
@@ -120,13 +126,18 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
     Each non-empty, non-comment line must contain at least three
     whitespace-separated fields::
 
-        <addr_hex>  <data_hex>  <W|R>  [Y]
+        <addr_hex>  <data_hex>  <W|R>  [Y]  [WAIT<n>]
         0  <count>  TCK
 
-    - *addr_hex*   — 32-bit address in hexadecimal (e.g. ``0x80000000``).
-    - *data_hex*   — data word in hex; width is clipped to *data_width* bits.
-    - *W* or *R*   — write or read operation.
-    - *Y*          — (optional, read-only) verify that TDO matches *data_hex*.
+    - *addr_hex*    — 32-bit address in hexadecimal (e.g. ``0x80000000``).
+    - *data_hex*    — data word in hex; width is clipped to *data_width*
+                      bits.
+    - *W* or *R*    — write or read operation.
+    - *Y*           — (optional, read-only) verify that TDO matches
+                      *data_hex*.
+    - *WAIT<n>*     — (optional) per-command TCK wait override (e.g.
+                      ``WAIT100``); overrides global ``--wait-cycles``
+                      for this command only.
 
     A special delay/wait form is also supported::
 
@@ -135,6 +146,11 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
 
     This inserts a RUNTEST wait for *count* TCK cycles; no JTAG scan
     operations are emitted.
+
+    R/W line examples with per-command WAIT override::
+
+        0x80000000  DEADBEEF  W       WAIT50
+        0x80000004  12345678  R  Y    WAIT100
 
     Lines whose first non-whitespace character is ``#`` are treated as
     comments and skipped.  Blank lines are also ignored.
@@ -179,18 +195,49 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
                 )
 
             op = ops[rw]
-            verify = False
-            if op == Op.R and len(parts) >= 4:
-                v = parts[3].upper()
-                if v == "Y":
-                    verify = True
-                elif v != "N":
-                    raise ValueError(
-                        f"{path}:{lineno}: fourth field must be Y or N "
-                        f"(or omitted), got {v!r}: {line!r}"
-                    )
 
-            cmds.append(MemCmd(addr=addr, data=data, op=op, verify=verify))
+            # --- Parse optional fields (Y/N verify, WAIT<n>) ---
+            verify = False
+            wait_cycles: Optional[int] = None
+            remaining = parts[3:]  # fields after R/W
+
+            for field in remaining:
+                fu = field.upper()
+
+                # WAIT<n> — per-command wait cycle override
+                if fu.startswith("WAIT"):
+                    try:
+                        wait_cycles = int(field[4:])  # strip "WAIT" prefix
+                    except ValueError:
+                        raise ValueError(
+                            f"{path}:{lineno}: invalid WAIT value "
+                            f"'{field}', expected WAIT<n> where n is "
+                            f"a positive integer: {line!r}"
+                        )
+                    if wait_cycles < 0:
+                        raise ValueError(
+                            f"{path}:{lineno}: WAIT value must be "
+                            f">= 0, got {wait_cycles}: {line!r}"
+                        )
+                    continue
+
+                # Y/N verify flag (read-only)
+                if op == Op.R and fu == "Y":
+                    verify = True
+                    continue
+                if op == Op.R and fu == "N":
+                    verify = False
+                    continue
+
+                raise ValueError(
+                    f"{path}:{lineno}: unrecognized field '{field}'. "
+                    f"Expected Y, N, or WAIT<n> for R/W lines: {line!r}"
+                )
+
+            cmds.append(MemCmd(
+                addr=addr, data=data, op=op,
+                verify=verify, wait_cycles=wait_cycles,
+            ))
 
     return cmds
 
@@ -1185,6 +1232,10 @@ class ArmCpuSvfBuilder:
         for idx, cmd in enumerate(self.cmd_list):
             label = f"[{idx + 1}/{len(self.cmd_list)}]"
 
+            # Resolve wait cycles: per-command override or global default
+            wait = cmd.wait_cycles if cmd.wait_cycles is not None else self.mem_wait_cycles
+            wait_suffix = f" (WAIT{wait})" if cmd.wait_cycles is not None else ""
+
             if cmd.op == Op.T:
                 # --- Wait / delay ---
                 g.comment(f"{label} RUNTEST {cmd.data} TCK (wait {cmd.data} cycles)")
@@ -1201,7 +1252,7 @@ class ArmCpuSvfBuilder:
                     SvfGenerator.AP_DRW,
                     f"{label} Read DRW from 0x{cmd.addr:08X}  (TDO=stale)",
                 )
-                g.runtest(self.mem_wait_cycles)  # Wait for memory write to complete
+                g.runtest(wait)  # Wait for memory read to complete
 
                 if cmd.verify:
                     # Verify via pipelined RDBUFF read
@@ -1209,14 +1260,15 @@ class ArmCpuSvfBuilder:
                     g.dp_read(
                         SvfGenerator.DP_RDBUFF,
                         f"{label} RDBUFF TDO ?= 0x{cmd.data:0{self.data_width // 4}X} "
-                        f"(+ACK=OK)",
+                        f"(+ACK=OK){wait_suffix}",
                         tdo_expected=tdo_expected,
                         tdo_mask=TDO_MASK,
                     )
                 else:
                     # Read without verification
                     g.dp_read(
-                        SvfGenerator.DP_RDBUFF, f"{label} RDBUFF (TDO not checked)"
+                        SvfGenerator.DP_RDBUFF,
+                        f"{label} RDBUFF (TDO not checked){wait_suffix}",
                     )
             else:
                 # --- Write operation ---
@@ -1225,9 +1277,9 @@ class ArmCpuSvfBuilder:
                     SvfGenerator.AP_DRW,
                     cmd.data,
                     f"{label} DRW ← 0x{cmd.data:0{self.data_width // 4}X}  "
-                    f"→ 0x{cmd.addr:08X}",
+                    f"→ 0x{cmd.addr:08X}{wait_suffix}",
                 )
-                g.runtest(self.mem_wait_cycles)  # Wait for memory write to complete
+                g.runtest(wait)  # Wait for memory write to complete
 
             # Periodic progress
             chunk = max(len(self.cmd_list) // 20, 1)
@@ -1305,14 +1357,17 @@ def main():
 
             Command File Format
             -------------------
-            Each non-empty, non-comment line has 3 or 4 whitespace-separated
-            fields:
-                <addr_hex>  <data_hex>  <W|R>  [Y]
+            Each non-empty, non-comment line has 3 or more whitespace-
+            separated fields:
+                <addr_hex>  <data_hex>  <W|R>  [Y]  [WAIT<n>]
                 0  <count>  TCK
-            - addr_hex:  memory address in hex (e.g. 0x80000000)
-            - data_hex:  data to write, or expected data on read
-            - W | R:     write or read operation
-            - Y:         (optional, read-only) verify TDO against data_hex
+            - addr_hex:   memory address in hex (e.g. 0x80000000)
+            - data_hex:   data to write, or expected data on read
+            - W | R:      write or read operation
+            - Y:          (optional, read-only) verify TDO against data_hex
+            - WAIT<n>:    (optional) per-command TCK wait override (e.g.
+                          WAIT100); overrides global --wait-cycles for this
+                          command only
             - 0 <count> TCK:  wait <count> cycles in Run-Test/Idle
             Lines starting with # are comments.
 
