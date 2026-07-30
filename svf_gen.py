@@ -569,7 +569,7 @@ class SvfGenerator:
         self,
         output_file: Optional[str] = None,
         chain: Optional[JtagChainConfig] = None,
-        status_poll_count: int = 0,
+        mem_wait_cycles: int = 0,
         formatter: Optional[SvfFormatter] = None,
     ):
         """Open output stream (file or stdout).
@@ -580,8 +580,8 @@ class SvfGenerator:
             chain: Optional JTAG daisy-chain configuration.  When provided,
                    all SIR/SDR operations are automatically extended to
                    account for non-target TAPs in BYPASS.
-            status_poll_count: Number of DP.CTRL/STAT status poll cycles to
-                   emit after each ``dp_write`` / ``dp_read`` operation.
+            mem_wait_cycles: Number of TCK wait cycles to insert after
+                             each memory access (DRW). 
             formatter: Optional output formatter.  Defaults to a new
                        ``SvfFormatter`` writing to *output_file*.  Pass a
                        different formatter to emit alternative formats (e.g.
@@ -589,7 +589,7 @@ class SvfGenerator:
         """
         self._formatter = formatter or SvfFormatter(output_file)
         self._chain = chain or JtagChainConfig.single_tap()
-        self._status_poll_count = status_poll_count
+        self._mem_wait_cycles = mem_wait_cycles
         self._formatter.emit_header(self._chain.summary)
 
     # ------------------------------------------------------------------
@@ -783,7 +783,7 @@ class CortexR52SvfBuilder:
         adi_version: int = 6,
         cmd_list: Optional[List[MemCmd]] = None,
         addr64: bool = False,
-        status_poll_count: int = 0,
+        mem_wait_cycles: int = 0,
     ):
         self.bin_path = bin_path
         self.base_addr = base_addr
@@ -797,7 +797,7 @@ class CortexR52SvfBuilder:
         self.adi_version = adi_version
         self.cmd_list = cmd_list
         self.addr64 = addr64
-        self.status_poll_count = status_poll_count
+        self.mem_wait_cycles = mem_wait_cycles
         # TAR de-duplication: track last-written {lo, hi} to skip redundant writes
         self._last_tar_lo: Optional[int] = None
         self._last_tar_hi: Optional[int] = None
@@ -1013,7 +1013,7 @@ class CortexR52SvfBuilder:
 
         gen = SvfGenerator(
             self.output_path, chain=chain,
-            status_poll_count=self.status_poll_count,
+            mem_wait_cycles=self.mem_wait_cycles,
         )
         g = gen  # shorthand
 
@@ -1047,8 +1047,7 @@ class CortexR52SvfBuilder:
                 f"→ 0x{self.base_addr + idx * word_bytes:08X}  "
                 f"[{idx}/{len(words) - 1}]",
             )
-            for _ in range(self.status_poll_count):
-                g.dp_status_poll()
+            g.runtest(self.mem_wait_cycles)  # Wait for memory write to complete
 
             # Periodic progress annotations
             chunk = max(len(words) // 20, 1)
@@ -1091,8 +1090,7 @@ class CortexR52SvfBuilder:
                     SvfGenerator.AP_DRW,
                     f"Read DRW → 0x{addr:08X}  (request, TDO=stale)",
                 )
-                for _ in range(self.status_poll_count):
-                    g.dp_status_poll()
+                g.runtest(self.mem_wait_cycles)  # Wait for memory read to complete
 
                 # DP read RDBUFF — TDO contains the DRW data from the AP read
                 # above.  Verify both data and ACK bits.
@@ -1151,7 +1149,7 @@ class CortexR52SvfBuilder:
 
         gen = SvfGenerator(
             self.output_path, chain=chain,
-            status_poll_count=self.status_poll_count,
+            mem_wait_cycles=self.mem_wait_cycles,
         )
         g = gen  # shorthand
 
@@ -1203,8 +1201,7 @@ class CortexR52SvfBuilder:
                     SvfGenerator.AP_DRW,
                     f"{label} Read DRW from 0x{cmd.addr:08X}  (TDO=stale)",
                 )
-                for _ in range(self.status_poll_count):
-                    g.dp_status_poll()
+                g.runtest(self.mem_wait_cycles)  # Wait for memory write to complete
 
                 if cmd.verify:
                     # Verify via pipelined RDBUFF read
@@ -1230,8 +1227,7 @@ class CortexR52SvfBuilder:
                     f"{label} DRW ← 0x{cmd.data:0{self.data_width // 4}X}  "
                     f"→ 0x{cmd.addr:08X}",
                 )
-                for _ in range(self.status_poll_count):
-                    g.dp_status_poll()
+                g.runtest(self.mem_wait_cycles)  # Wait for memory write to complete
 
             # Periodic progress
             chunk = max(len(self.cmd_list) // 20, 1)
@@ -1431,16 +1427,13 @@ def main():
 
     # ---- Features -------------------------------------------------------------
     parser.add_argument(
-        "--status-poll",
+        "--wait-cycles",
         "-s",
         type=int,
         default=0,
         metavar="N",
-        help="Number of DP.CTRL/STAT status poll cycles to insert after "
-        "each DP register access (dp_write / dp_read).  Each poll performs "
-        "a complete pipelined read of the CTRL/STAT register, providing "
-        "synchronisation points to ensure pending memory transactions "
-        "complete before the next operation.  Default: 0 (no polling).",
+        help="Number of TCK wait cycles to insert after "
+        "each memory access (DRW). Default: 0 (no polling).",
     )
     parser.add_argument(
         "--addr64",
@@ -1538,7 +1531,7 @@ def main():
             file=sys.stderr,
         )
         print(
-            f"[INFO] Status poll  : {args.status_poll} cycles after each DP access",
+            f"[INFO] Status poll  : {args.wait_cycles} cycles after each DRW access",
             file=sys.stderr,
         )
         print(
@@ -1563,7 +1556,7 @@ def main():
         adi_version=args.adi_version,
         cmd_list=cmd_list,
         addr64=args.addr64,
-        status_poll_count=args.status_poll,
+        mem_wait_cycles=args.wait_cycles,
     )
 
     result = builder.generate()
