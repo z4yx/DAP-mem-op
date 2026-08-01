@@ -1155,7 +1155,15 @@ class ArmCpuSvfBuilder:
         return blob, words
 
     def _generate_from_bin(self):
-        """Original binary-download generation path."""
+        """Binary-download generation path.
+
+        Delegates the actual memory write to ``_emit_mem_block`` (the
+        same routine used for command-file ``MEM`` operations).  Because
+        .bin mode configures auto-increment CSW in the setup phases and
+        must keep it that way for the optional read-back verification
+        that follows, the shared routine is told to skip its own CSW
+        switch and restore.
+        """
 
         # --- Read & pad binary -------------------------------------------------
         blob, words = self._load_binary_words(self.bin_path)
@@ -1185,44 +1193,27 @@ class ArmCpuSvfBuilder:
         )
 
         # ==================================================================
-        #  PHASE 5 — Write Binary Data to Memory
+        #  PHASE 5 — Write Binary Data to Memory (shared block writer)
+        #  CSW is already auto-increment from the setup phases and must
+        #  remain so for the optional verification phase below, so the
+        #  shared writer skips its own CSW switch/restore.
         # ==================================================================
-        g.comment("=" * 70)
-        g.comment(f"PHASE 5: Write {len(blob)} bytes to 0x{self.base_addr:08X}")
-        g.comment(f"        Data width: {self.data_width}-bit, Words: {len(words)}")
-        g.comment("        Mode: auto-increment (TAR set once)")
-        g.comment("=" * 70)
-        g.blank()
-
-        word_bytes = self.data_width // 8
-
-        # TAR auto-increments after each DRW access — set it once
-        self._write_tar(g, self.base_addr, label="(auto-increment mode)")
-
-        for idx, word in enumerate(words):
-            g.ap_write(
-                SvfGenerator.AP_DRW,
-                word,
-                f"DRW ← 0x{word:0{self.data_width // 4}X}  "
-                f"→ 0x{self.base_addr + idx * word_bytes:08X}  "
-                f"[{idx}/{len(words) - 1}]",
-            )
-            g.runtest(self.mem_wait_cycles)  # Wait for memory write to complete
-
-            # Periodic progress annotations
-            chunk = max(len(words) // 20, 1)
-            if idx > 0 and idx % chunk == 0:
-                pct = idx * 100 // len(words)
-                g.comment(f"  ... {pct}% complete ({idx}/{len(words)} words)")
-
-        g.comment(f"  ✓ Write complete — {len(words)} words, {len(blob)} bytes total")
-        g.blank()
+        self._emit_mem_block(
+            g,
+            self.base_addr,
+            self.bin_path,
+            switch_csw=False,
+            restore_csw=False,
+            title=f"PHASE 5: Write {len(blob)} bytes to 0x{self.base_addr:08X}",
+            preloaded=(blob, words),
+        )
 
         # ==================================================================
         #  PHASE 6 — Verification (optional)
         # ==================================================================
         if self.verify:
             TDO_MASK = (0xFFFFFFFF << 3) | self.ACK_MASK
+            word_bytes = self.data_width // 8
 
             g.comment("=" * 70)
             g.comment("PHASE 6: Read-Back Verification (with TDO check)")
@@ -1290,6 +1281,10 @@ class ArmCpuSvfBuilder:
         bin_path: str,
         max_bytes: int = 0,
         label: str = "",
+        switch_csw: bool = True,
+        restore_csw: bool = True,
+        title: Optional[str] = None,
+        preloaded: Optional[tuple] = None,
     ) -> int:
         """Download a binary file to memory as a sequential block write.
 
@@ -1298,40 +1293,64 @@ class ArmCpuSvfBuilder:
         auto-increments after each AP.DRW access.  Afterwards CSW is
         restored to ADDRINC_OFF for the remaining random-access commands.
 
+        This routine is also the shared workhorse for .bin download mode:
+        pass ``switch_csw=False`` (the caller already configured
+        auto-increment CSW) and ``restore_csw=False`` (so a following
+        read-back verification can keep using auto-increment).
+
         Args:
-            g:          SvfGenerator instance.
-            addr:       Destination base address.
-            bin_path:   Path to the binary file.
-            max_bytes:  Max bytes to download; 0 = whole file.
-            label:      Optional progress label (e.g. ``"[3/10]"``).
+            g:           SvfGenerator instance.
+            addr:        Destination base address.
+            bin_path:    Path to the binary file.
+            max_bytes:   Max bytes to download; 0 = whole file.
+            label:       Optional progress label (e.g. ``"[3/10]"``).
+            switch_csw:  Write CSW = ADDRINC_SINGLE before the block.
+                         Default True (command-file mode).  Set False when
+                         the AP is already in auto-increment mode.
+            restore_csw: Restore CSW = ADDRINC_OFF after the block.
+                         Default True (command-file mode).  Set False to
+                         leave CSW in auto-increment mode afterwards.
+            title:       Optional header line.  When given, replaces the
+                         default ``MEM download / Source`` header lines.
+            preloaded:   Optional ``(blob, words)`` tuple from a prior
+                         ``_load_binary_words`` call, avoiding a second
+                         file read.
 
         Returns:
             Number of bytes written (padded blob length).
         """
-        blob, words = self._load_binary_words(bin_path, max_bytes=max_bytes)
+        if preloaded is not None:
+            blob, words = preloaded
+        else:
+            blob, words = self._load_binary_words(bin_path, max_bytes=max_bytes)
         word_bytes = self.data_width // 8
         size_name = {8: "8-bit", 16: "16-bit", 32: "32-bit"}[self.data_width]
         label_prefix = f"{label} " if label else ""
 
         g.comment("=" * 70)
-        g.comment(f"MEM download: {len(blob)} bytes → 0x{addr:08X}")
-        g.comment(f"        Source: {bin_path}")
+        if title is not None:
+            g.comment(title)
+        else:
+            g.comment(f"MEM download: {len(blob)} bytes → 0x{addr:08X}")
+            g.comment(f"        Source: {bin_path}")
         g.comment(f"        Data width: {self.data_width}-bit, Words: {len(words)}")
         g.comment("        Mode: auto-increment (TAR set once)")
         g.comment("=" * 70)
         g.blank()
 
         # Switch CSW to auto-increment for the sequential block write
-        csw_inc = self._csw_value(auto_increment=True)
-        g.ap_write(
-            SvfGenerator.AP_CSW, csw_inc,
-            f"CSW: {size_name}, ADDRINC_SINGLE (MEM block write)",
-        )
-        g.dp_read(
-            SvfGenerator.DP_CTRL_STAT,
-            "Read CTRL/STAT (wait for last operation)",
-        )
-        g.runtest(10)
+        # (skipped when the caller already configured it, e.g. .bin mode)
+        if switch_csw:
+            csw_inc = self._csw_value(auto_increment=True)
+            g.ap_write(
+                SvfGenerator.AP_CSW, csw_inc,
+                f"CSW: {size_name}, ADDRINC_SINGLE (MEM block write)",
+            )
+            g.dp_read(
+                SvfGenerator.DP_CTRL_STAT,
+                "Read CTRL/STAT (wait for last operation)",
+            )
+            g.runtest(10)
 
         # Reset TAR tracking, then set TAR once (auto-increment advances it)
         self._last_tar_lo = None
@@ -1353,16 +1372,18 @@ class ArmCpuSvfBuilder:
         g.blank()
 
         # Restore CSW to ADDRINC_OFF for the remaining random-access commands
-        csw_off = self._csw_value(auto_increment=False)
-        g.ap_write(
-            SvfGenerator.AP_CSW, csw_off,
-            f"CSW: {size_name}, ADDRINC_OFF (restore)",
-        )
-        g.dp_read(
-            SvfGenerator.DP_CTRL_STAT,
-            "Read CTRL/STAT (wait for last operation)",
-        )
-        g.runtest(10)
+        # (skipped in .bin mode where verification keeps auto-increment)
+        if restore_csw:
+            csw_off = self._csw_value(auto_increment=False)
+            g.ap_write(
+                SvfGenerator.AP_CSW, csw_off,
+                f"CSW: {size_name}, ADDRINC_OFF (restore)",
+            )
+            g.dp_read(
+                SvfGenerator.DP_CTRL_STAT,
+                "Read CTRL/STAT (wait for last operation)",
+            )
+            g.runtest(10)
 
         # Hardware TAR has auto-incremented past the block — force an
         # explicit TAR write before the next random-access command.
