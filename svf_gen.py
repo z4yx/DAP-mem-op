@@ -47,16 +47,17 @@ Memory Command Sequence (command-file mode)
     5. For each command:
        - Write: set AP.TAR, write AP.DRW
        - Read:  set AP.TAR, read AP.DRW, read DP.RDBUFF
-         (with optional TDO verification if Y flag is set)
+         (with optional TDO verification if Y flag is set; an optional
+          hex MASK after Y restricts comparison to bits that are 1)
     6. JTAG Reset
 
 Command File Format
 -------------------
-    <addr_hex>  <data_hex>  <W|R>  [Y]  [WAIT<n>]
+    <addr_hex>  <data_hex>  <W|R>  [Y [MASK]]  [WAIT<n>]
     0  <count>  TCK
     # This is a comment line
     0x80000000  DEADBEEF  W       WAIT50
-    0x80000004  12345678  R  Y    WAIT100
+    0x80000004  12345678  R  Y  FFFF0000  WAIT100
     0x80001000  AABBCCDD  R
     0  100  TCK
 
@@ -107,6 +108,10 @@ class MemCmd:
                      or ``Op.T`` (TCK wait).
         verify:      For reads: whether to compare TDO against *data*
                      (Y/N).  Only meaningful when *op* is ``Op.R``.
+        tdo_mask:    Optional data-compare mask for read verification.
+                     Only bits set to 1 in *tdo_mask* are compared against
+                     the expected *data*.  ``None`` means compare all data
+                     bits.  Only meaningful when *verify* is True.
         wait_cycles: Optional per-command TCK wait cycles after the
                      access.  When set (not None), overrides the global
                      ``--wait-cycles`` setting for this command only.
@@ -117,6 +122,7 @@ class MemCmd:
     data: int
     op: Op
     verify: bool = False
+    tdo_mask: Optional[int] = None
     wait_cycles: Optional[int] = None
 
 
@@ -126,7 +132,7 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
     Each non-empty, non-comment line must contain at least three
     whitespace-separated fields::
 
-        <addr_hex>  <data_hex>  <W|R>  [Y]  [WAIT<n>]
+        <addr_hex>  <data_hex>  <W|R>  [Y [MASK]]  [WAIT<n>]
         0  <count>  TCK
 
     - *addr_hex*    — 32-bit address in hexadecimal (e.g. ``0x80000000``).
@@ -135,6 +141,11 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
     - *W* or *R*    — write or read operation.
     - *Y*           — (optional, read-only) verify that TDO matches
                       *data_hex*.
+    - *MASK*        — (optional, hex) data-compare mask that must follow
+                      *Y* on a read line.  Only bits set to 1 in *MASK*
+                      are compared against the expected *data_hex*; other
+                      bits are ignored.  When omitted, all data bits are
+                      compared.
     - *WAIT<n>*     — (optional) per-command TCK wait override (e.g.
                       ``WAIT100``); overrides global ``--wait-cycles``
                       for this command only.
@@ -147,10 +158,11 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
     This inserts a RUNTEST wait for *count* TCK cycles; no JTAG scan
     operations are emitted.
 
-    R/W line examples with per-command WAIT override::
+    R/W line examples with per-command compare mask and WAIT override::
 
         0x80000000  DEADBEEF  W       WAIT50
-        0x80000004  12345678  R  Y    WAIT100
+        0x80000004  12345678  R  Y  FFFF0000  WAIT100
+        0x80000008  AABBCCDD  R  Y  000000FF
 
     Lines whose first non-whitespace character is ``#`` are treated as
     comments and skipped.  Blank lines are also ignored.
@@ -196,12 +208,15 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
 
             op = ops[rw]
 
-            # --- Parse optional fields (Y/N verify, WAIT<n>) ---
+            # --- Parse optional fields (Y/N verify, [MASK], WAIT<n>) ---
             verify = False
+            tdo_mask: Optional[int] = None
             wait_cycles: Optional[int] = None
-            remaining = parts[3:]  # fields after R/W
+            seen_y = False  # True between "Y" and its optional hex MASK
+            i = 3  # first optional field index
 
-            for field in remaining:
+            while i < len(parts):
+                field = parts[i]
                 fu = field.upper()
 
                 # WAIT<n> — per-command wait cycle override
@@ -219,24 +234,44 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
                             f"{path}:{lineno}: WAIT value must be "
                             f">= 0, got {wait_cycles}: {line!r}"
                         )
+                    i += 1
                     continue
 
                 # Y/N verify flag (read-only)
                 if op == Op.R and fu == "Y":
                     verify = True
+                    seen_y = True  # next non-WAIT field (if any) is MASK
+                    i += 1
                     continue
                 if op == Op.R and fu == "N":
                     verify = False
+                    seen_y = False
+                    i += 1
+                    continue
+
+                # Data-compare MASK — hex, must immediately follow Y
+                if op == Op.R and seen_y:
+                    try:
+                        tdo_mask = int(field, 16) & mask
+                    except ValueError:
+                        raise ValueError(
+                            f"{path}:{lineno}: invalid compare mask "
+                            f"'{field}', expected hexadecimal after Y: "
+                            f"{line!r}"
+                        )
+                    seen_y = False  # consume the mask; one per Y
+                    i += 1
                     continue
 
                 raise ValueError(
                     f"{path}:{lineno}: unrecognized field '{field}'. "
-                    f"Expected Y, N, or WAIT<n> for R/W lines: {line!r}"
+                    f"Expected Y [MASK] or WAIT<n> for R/W lines: {line!r}"
                 )
 
             cmds.append(MemCmd(
                 addr=addr, data=data, op=op,
-                verify=verify, wait_cycles=wait_cycles,
+                verify=verify, tdo_mask=tdo_mask,
+                wait_cycles=wait_cycles,
             ))
 
     return cmds
@@ -1222,13 +1257,6 @@ class ArmCpuSvfBuilder:
         g.comment("=" * 70)
         g.blank()
 
-        TDO_MASK = (0xFFFFFFFF << 3) | self.ACK_MASK
-        # Adjust TDO_MASK for non-32-bit widths
-        if self.data_width == 16:
-            TDO_MASK = (0xFFFF << 3) | self.ACK_MASK
-        elif self.data_width == 8:
-            TDO_MASK = (0xFF << 3) | self.ACK_MASK
-
         for idx, cmd in enumerate(self.cmd_list):
             label = f"[{idx + 1}/{len(self.cmd_list)}]"
 
@@ -1255,14 +1283,23 @@ class ArmCpuSvfBuilder:
                 g.runtest(wait)  # Wait for memory read to complete
 
                 if cmd.verify:
-                    # Verify via pipelined RDBUFF read
+                    # Verify via pipelined RDBUFF read.
+                    # Only data bits set to 1 in the compare mask are
+                    # checked; default (no mask) compares all data bits.
+                    data_mask = (
+                        cmd.tdo_mask
+                        if cmd.tdo_mask is not None
+                        else (1 << self.data_width) - 1
+                    )
+                    tdo_mask = (data_mask << 3) | self.ACK_MASK
                     tdo_expected = (cmd.data << 3) | self.ACK_OK
+                    mask_desc = f" mask=0x{data_mask:0{self.data_width // 4}X}"
                     g.dp_read(
                         SvfGenerator.DP_RDBUFF,
                         f"{label} RDBUFF TDO ?= 0x{cmd.data:0{self.data_width // 4}X} "
-                        f"(+ACK=OK){wait_suffix}",
+                        f"(+ACK=OK){mask_desc}{wait_suffix}",
                         tdo_expected=tdo_expected,
-                        tdo_mask=TDO_MASK,
+                        tdo_mask=tdo_mask,
                     )
                 else:
                     # Read without verification
@@ -1359,12 +1396,15 @@ def main():
             -------------------
             Each non-empty, non-comment line has 3 or more whitespace-
             separated fields:
-                <addr_hex>  <data_hex>  <W|R>  [Y]  [WAIT<n>]
+                <addr_hex>  <data_hex>  <W|R>  [Y [MASK]]  [WAIT<n>]
                 0  <count>  TCK
             - addr_hex:   memory address in hex (e.g. 0x80000000)
             - data_hex:   data to write, or expected data on read
             - W | R:      write or read operation
             - Y:          (optional, read-only) verify TDO against data_hex
+            - MASK:       (optional, hex) data-compare mask that must follow
+                          Y on a read line; only bits set to 1 are compared
+                          against data_hex.  Omit to compare all data bits.
             - WAIT<n>:    (optional) per-command TCK wait override (e.g.
                           WAIT100); overrides global --wait-cycles for this
                           command only
@@ -1403,7 +1443,8 @@ def main():
         metavar="CMDS.txt",
         help=(
             "Path to a text file listing memory read/write commands.  "
-            "Each line: <addr_hex> <data_hex> <W|R> [Y].  "
+            "Each line: <addr_hex> <data_hex> <W|R> [Y [MASK]] [WAIT<n>].  "
+            "MASK (hex) after Y limits read verification to bits that are 1.  "
             "Mutually exclusive with the positional .bin file argument."
         ),
     )
