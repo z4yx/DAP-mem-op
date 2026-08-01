@@ -9,13 +9,16 @@
 0     100 TCK
 
 # --- Write some registers / memory locations ---
-1000  DEADBEEF  R Y FFFFFFFF WAIT1800
-1004  CAFEBABE  R Y FFFFFFFF WAIT1800
-1008  12345678  R Y FFFFFFFF WAIT1800
-100C  000000FF  W            WAIT500
+1000  DEADBEEF  W WAIT1800
+1004  CAFEBABE  W WAIT1800
+1008  12345678  W WAIT1800
+100C  000000FF  W  WAIT500
+
+2000  16   MEM test_firmware.bin
+2000  0    MEM test_firmware.bin
 
 # --- Read back and verify ---
-1000  DEADBEEF  R  Y FFFFFFFF WAIT1800
+1000  DEADBEEF  R  Y 1 WAIT1800
 1004  CAFEBABE  R  Y FFFFFFFF WAIT1800
 100C  000000FF  R  Y FFFFFFFF WAIT1800
 
@@ -45,4 +48,10 @@
 29_00001014  FF101014  R
 29_00001010  FF101010  R
 29_00001010  FF101010  R
+
+# --- MEM binary download (length 0 = whole file) ---
+0x80002000  0  MEM  test_firmware.bin
+
+# --- MEM binary download (first 0x20 = 32 bytes only) ---
+0x80003000  0x20  MEM  test_firmware.bin
 

@@ -49,15 +49,19 @@ Memory Command Sequence (command-file mode)
        - Read:  set AP.TAR, read AP.DRW, read DP.RDBUFF
          (with optional TDO verification if Y flag is set; an optional
           hex MASK after Y restricts comparison to bits that are 1)
+       - MEM:   switch CSW to auto-increment, download a binary file to
+                memory at the given address, then restore CSW
     6. JTAG Reset
 
 Command File Format
 -------------------
     <addr_hex>  <data_hex>  <W|R>  [Y [MASK]]  [WAIT<n>]
+    <addr_hex>  <length>  MEM  <bin_file>
     0  <count>  TCK
     # This is a comment line
     0x80000000  DEADBEEF  W       WAIT50
     0x80000004  12345678  R  Y  FFFF0000  WAIT100
+    0x80010000  0        MEM  app.bin
     0x80001000  AABBCCDD  R
     0  100  TCK
 
@@ -93,6 +97,7 @@ class Op(Enum):
     R = 0  # read
     W = 1  # write
     T = 2  # TCK wait
+    M = 3  # MEM: download a binary file to memory
 
 
 @dataclass
@@ -100,18 +105,23 @@ class MemCmd:
     """A single command parsed from a text command file.
 
     Fields:
-        addr:        Target memory address (32-bit).  Ignored for wait
+        addr:        Target memory address (32-bit).  For ``Op.M`` this is
+                     the destination base address.  Ignored for wait
                      commands.
         data:        Data value to write, expected data on read, or TCK
                      cycle count for wait commands.
         op:          Operation type — ``Op.R`` (read), ``Op.W`` (write),
-                     or ``Op.T`` (TCK wait).
+                     ``Op.T`` (TCK wait), or ``Op.M`` (binary download).
         verify:      For reads: whether to compare TDO against *data*
                      (Y/N).  Only meaningful when *op* is ``Op.R``.
         tdo_mask:    Optional data-compare mask for read verification.
                      Only bits set to 1 in *tdo_mask* are compared against
                      the expected *data*.  ``None`` means compare all data
                      bits.  Only meaningful when *verify* is True.
+        mem_len:     For ``Op.M``: number of bytes to download.  ``0``
+                     means the whole file.  Ignored otherwise.
+        mem_file:    For ``Op.M``: path to the binary file to download.
+                     Ignored otherwise.
         wait_cycles: Optional per-command TCK wait cycles after the
                      access.  When set (not None), overrides the global
                      ``--wait-cycles`` setting for this command only.
@@ -123,6 +133,8 @@ class MemCmd:
     op: Op
     verify: bool = False
     tdo_mask: Optional[int] = None
+    mem_len: int = 0
+    mem_file: Optional[str] = None
     wait_cycles: Optional[int] = None
 
 
@@ -133,6 +145,7 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
     whitespace-separated fields::
 
         <addr_hex>  <data_hex>  <W|R>  [Y [MASK]]  [WAIT<n>]
+        <addr_hex>  <length>  MEM  <bin_file>
         0  <count>  TCK
 
     - *addr_hex*    — 32-bit address in hexadecimal (e.g. ``0x80000000``).
@@ -149,6 +162,13 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
     - *WAIT<n>*     — (optional) per-command TCK wait override (e.g.
                       ``WAIT100``); overrides global ``--wait-cycles``
                       for this command only.
+    - *MEM*         — binary download: write the contents of *bin_file*
+                      to memory starting at *addr_hex*.  *length* is the
+                      number of bytes to download (hex or decimal);
+                      ``0`` means the whole file.  The CSW is switched to
+                      auto-increment for the block write and back
+                      afterwards.  *bin_file* may be a relative path,
+                      resolved against the command file directory.
 
     A special delay/wait form is also supported::
 
@@ -163,6 +183,7 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
         0x80000000  DEADBEEF  W       WAIT50
         0x80000004  12345678  R  Y  FFFF0000  WAIT100
         0x80000008  AABBCCDD  R  Y  000000FF
+        0x80010000  0        MEM  app.bin
 
     Lines whose first non-whitespace character is ``#`` are treated as
     comments and skipped.  Blank lines are also ignored.
@@ -195,6 +216,39 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
                         f"got {tck}: {line!r}"
                     )
                 cmds.append(MemCmd(addr=0, data=tck, op=Op.T))
+                continue
+
+            # --- MEM download: "<addr> <length> MEM <file>" ---
+            if rw == "MEM":
+                if len(parts) < 4:
+                    raise ValueError(
+                        f"{path}:{lineno}: MEM command requires 4 fields "
+                        f"(addr length MEM filename), got {len(parts)}: "
+                        f"{line!r}"
+                    )
+                mem_len = int(parts[1], 0)
+                if mem_len < 0:
+                    raise ValueError(
+                        f"{path}:{lineno}: MEM length must be >= 0, "
+                        f"got {mem_len}: {line!r}"
+                    )
+                mem_file = parts[3]
+                if not os.path.isfile(mem_file):
+                    # Resolve relative to the command file directory
+                    alt = os.path.join(
+                        os.path.dirname(os.path.abspath(path)), mem_file
+                    )
+                    if os.path.isfile(alt):
+                        mem_file = alt
+                    else:
+                        raise ValueError(
+                            f"{path}:{lineno}: MEM binary file not found: "
+                            f"{mem_file!r}"
+                        )
+                cmds.append(MemCmd(
+                    addr=addr, data=0, op=Op.M,
+                    mem_len=mem_len, mem_file=mem_file,
+                ))
                 continue
 
             data = int(parts[1], 16) & mask
@@ -1054,12 +1108,29 @@ class ArmCpuSvfBuilder:
             return self._generate_from_cmds()
         return self._generate_from_bin()
 
-    def _generate_from_bin(self):
-        """Original binary-download generation path."""
+    # ------------------------------------------------------------------
+    # Binary loading helper (shared by .bin mode and MEM commands)
+    # ------------------------------------------------------------------
 
-        # --- Read & pad binary -------------------------------------------------
-        with open(self.bin_path, "rb") as fh:
+    def _load_binary_words(self, bin_path: str, max_bytes: int = 0):
+        """Read a binary file into a list of data-width words.
+
+        Args:
+            bin_path:  Path to the raw binary file.
+            max_bytes: Maximum number of bytes to take from the file.
+                       ``0`` (default) means use the whole file.  The blob
+                       is truncated to *max_bytes* before word alignment.
+
+        Returns:
+            ``(blob, words)`` where *blob* is the (possibly padded) raw
+            bytes and *words* is the list of little-endian data words of
+            width *data_width*.
+        """
+        with open(bin_path, "rb") as fh:
             blob = fh.read()
+
+        if max_bytes > 0 and len(blob) > max_bytes:
+            blob = blob[:max_bytes]
 
         word_bytes = self.data_width // 8
         remainder = len(blob) % word_bytes
@@ -1081,6 +1152,13 @@ class ArmCpuSvfBuilder:
         else:
             fmt = f"<{len(blob)}B"
         words = list(struct.unpack(fmt, blob))
+        return blob, words
+
+    def _generate_from_bin(self):
+        """Original binary-download generation path."""
+
+        # --- Read & pad binary -------------------------------------------------
+        blob, words = self._load_binary_words(self.bin_path)
 
         # --- Build chain configuration -----------------------------------------
         chain = None
@@ -1202,6 +1280,98 @@ class ArmCpuSvfBuilder:
         return len(blob)
 
     # ------------------------------------------------------------------
+    # MEM block write (binary download within a command file)
+    # ------------------------------------------------------------------
+
+    def _emit_mem_block(
+        self,
+        g: SvfGenerator,
+        addr: int,
+        bin_path: str,
+        max_bytes: int = 0,
+        label: str = "",
+    ) -> int:
+        """Download a binary file to memory as a sequential block write.
+
+        The MEM-AP CSW is temporarily switched from ADDRINC_OFF to
+        ADDRINC_SINGLE so the TAR only needs to be set once and then
+        auto-increments after each AP.DRW access.  Afterwards CSW is
+        restored to ADDRINC_OFF for the remaining random-access commands.
+
+        Args:
+            g:          SvfGenerator instance.
+            addr:       Destination base address.
+            bin_path:   Path to the binary file.
+            max_bytes:  Max bytes to download; 0 = whole file.
+            label:      Optional progress label (e.g. ``"[3/10]"``).
+
+        Returns:
+            Number of bytes written (padded blob length).
+        """
+        blob, words = self._load_binary_words(bin_path, max_bytes=max_bytes)
+        word_bytes = self.data_width // 8
+        size_name = {8: "8-bit", 16: "16-bit", 32: "32-bit"}[self.data_width]
+        label_prefix = f"{label} " if label else ""
+
+        g.comment("=" * 70)
+        g.comment(f"MEM download: {len(blob)} bytes → 0x{addr:08X}")
+        g.comment(f"        Source: {bin_path}")
+        g.comment(f"        Data width: {self.data_width}-bit, Words: {len(words)}")
+        g.comment("        Mode: auto-increment (TAR set once)")
+        g.comment("=" * 70)
+        g.blank()
+
+        # Switch CSW to auto-increment for the sequential block write
+        csw_inc = self._csw_value(auto_increment=True)
+        g.ap_write(
+            SvfGenerator.AP_CSW, csw_inc,
+            f"CSW: {size_name}, ADDRINC_SINGLE (MEM block write)",
+        )
+        g.dp_read(
+            SvfGenerator.DP_CTRL_STAT,
+            "Read CTRL/STAT (wait for last operation)",
+        )
+        g.runtest(10)
+
+        # Reset TAR tracking, then set TAR once (auto-increment advances it)
+        self._last_tar_lo = None
+        self._last_tar_hi = None
+        self._write_tar(g, addr, label_prefix + "(MEM)")
+
+        for idx, word in enumerate(words):
+            g.ap_write(
+                SvfGenerator.AP_DRW,
+                word,
+                f"{label_prefix}DRW ← 0x{word:0{self.data_width // 4}X}  "
+                f"→ 0x{addr + idx * word_bytes:08X}  "
+                f"[{idx}/{len(words) - 1}]",
+            )
+            g.runtest(self.mem_wait_cycles)  # Wait for memory write to complete
+
+        g.comment(f"  ✓ MEM block complete — {len(words)} words, "
+                  f"{len(blob)} bytes total")
+        g.blank()
+
+        # Restore CSW to ADDRINC_OFF for the remaining random-access commands
+        csw_off = self._csw_value(auto_increment=False)
+        g.ap_write(
+            SvfGenerator.AP_CSW, csw_off,
+            f"CSW: {size_name}, ADDRINC_OFF (restore)",
+        )
+        g.dp_read(
+            SvfGenerator.DP_CTRL_STAT,
+            "Read CTRL/STAT (wait for last operation)",
+        )
+        g.runtest(10)
+
+        # Hardware TAR has auto-incremented past the block — force an
+        # explicit TAR write before the next random-access command.
+        self._last_tar_lo = None
+        self._last_tar_hi = None
+        g.blank()
+        return len(blob)
+
+    # ------------------------------------------------------------------
     # Command-file generation
     # ------------------------------------------------------------------
 
@@ -1212,9 +1382,10 @@ class ArmCpuSvfBuilder:
             reads = sum(1 for c in self.cmd_list if c.op == Op.R)
             writes = sum(1 for c in self.cmd_list if c.op == Op.W)
             waits = sum(1 for c in self.cmd_list if c.op == Op.T)
+            mems = sum(1 for c in self.cmd_list if c.op == Op.M)
             print(
                 f"[INFO] Command file: {writes} writes, {reads} reads, "
-                f"{waits} waits ({len(self.cmd_list)} total)",
+                f"{mems} MEM, {waits} waits ({len(self.cmd_list)} total)",
                 file=sys.stderr,
             )
 
@@ -1247,10 +1418,11 @@ class ArmCpuSvfBuilder:
         # ==================================================================
         g.comment("=" * 70)
         waits_count = sum(1 for c in self.cmd_list if c.op == Op.T)
-        rw_count = len(self.cmd_list) - waits_count
+        mems_count = sum(1 for c in self.cmd_list if c.op == Op.M)
+        rw_count = len(self.cmd_list) - waits_count - mems_count
         g.comment(
             f"PHASE 5: Execute {len(self.cmd_list)} commands "
-            f"({rw_count} R/W, {waits_count} wait)"
+            f"({rw_count} R/W, {mems_count} MEM, {waits_count} wait)"
         )
         g.comment(f"        Data width: {self.data_width}-bit")
         g.comment("        Mode: explicit TAR per access (ADDRINC_OFF)")
@@ -1268,6 +1440,22 @@ class ArmCpuSvfBuilder:
                 # --- Wait / delay ---
                 g.comment(f"{label} RUNTEST {cmd.data} TCK (wait {cmd.data} cycles)")
                 g.runtest(cmd.data)
+                g.blank()
+                continue
+
+            if cmd.op == Op.M:
+                # --- MEM binary download ---
+                g.comment(
+                    f"{label} MEM download: {cmd.mem_file} → 0x{cmd.addr:08X}"
+                    f"  (len={cmd.mem_len or 'whole file'})"
+                )
+                self._emit_mem_block(
+                    g,
+                    cmd.addr,
+                    cmd.mem_file,
+                    max_bytes=cmd.mem_len,
+                    label=label,
+                )
                 g.blank()
                 continue
 
@@ -1397,6 +1585,7 @@ def main():
             Each non-empty, non-comment line has 3 or more whitespace-
             separated fields:
                 <addr_hex>  <data_hex>  <W|R>  [Y [MASK]]  [WAIT<n>]
+                <addr_hex>  <length>  MEM  <bin_file>
                 0  <count>  TCK
             - addr_hex:   memory address in hex (e.g. 0x80000000)
             - data_hex:   data to write, or expected data on read
@@ -1408,6 +1597,11 @@ def main():
             - WAIT<n>:    (optional) per-command TCK wait override (e.g.
                           WAIT100); overrides global --wait-cycles for this
                           command only
+            - MEM:        binary download: write <bin_file> to memory at
+                          <addr_hex>.  <length> is the byte count to write
+                          (hex or decimal); 0 means the whole file.  CSW is
+                          switched to auto-increment for the block and
+                          restored afterwards.
             - 0 <count> TCK:  wait <count> cycles in Run-Test/Idle
             Lines starting with # are comments.
 
@@ -1442,9 +1636,11 @@ def main():
         default=None,
         metavar="CMDS.txt",
         help=(
-            "Path to a text file listing memory read/write commands.  "
-            "Each line: <addr_hex> <data_hex> <W|R> [Y [MASK]] [WAIT<n>].  "
-            "MASK (hex) after Y limits read verification to bits that are 1.  "
+            "Path to a text file listing memory access commands.  "
+            "Each line: <addr_hex> <data_hex> <W|R> [Y [MASK]] [WAIT<n>] "
+            "or <addr_hex> <length> MEM <bin_file>.  "
+            "MASK (hex) after Y limits read verification to bits that are 1; "
+            "MEM downloads a binary file to memory (length 0 = whole file).  "
             "Mutually exclusive with the positional .bin file argument."
         ),
     )
