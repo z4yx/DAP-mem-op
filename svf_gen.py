@@ -744,10 +744,10 @@ class SvfGenerator:
         """Run-Test/Idle for *tck_cycles* TCK clock periods (delegates to formatter)."""
         self._formatter.runtest(tck_cycles)
 
-    def jtag_idcode(self):
+    def jtag_idcode(self, idcode: int):
         """Set IR = IDCODE, then scan 32-bit DR to read device ID."""
         self._sir(4, self.IR_IDCODE)
-        self._sdr(32, 0x00000000, comment="Read IDCODE — TDO receives device ID")
+        self._sdr(32, 0x00000000, comment="Read IDCODE — TDO receives device ID", tdo=idcode, tdo_mask=0xFFFFFFFF)
 
     def jtag_dpacc(self):
         """Set IR = DPACC (Debug Port access)."""
@@ -1016,9 +1016,9 @@ class ArmCpuSvfBuilder:
                 SvfGenerator.AP_HTAR, hi, f"{label_prefix}TAR2 ← 0x{hi:08X}  (upper)"
             )
             self._last_tar_hi = hi
-            g.dp_read(
-                SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (wait for last operation)"
-            )
+            # g.dp_read(
+            #     SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (wait for last operation)"
+            # )
 
         if lo != self._last_tar_lo:
             comment = f"{label_prefix}TAR ← 0x{lo:08X}"
@@ -1026,9 +1026,9 @@ class ArmCpuSvfBuilder:
                 comment += f"  (lower, full=0x{addr:016X})"
             g.ap_write(SvfGenerator.AP_LTAR, lo, comment)
             self._last_tar_lo = lo
-            g.dp_read(
-                SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (wait for last operation)"
-            )
+            # g.dp_read(
+            #     SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (wait for last operation)"
+            # )
 
     # ------------------------------------------------------------------
     # Shared setup (JTAG reset, power-up, AP selection, CSW)
@@ -1042,7 +1042,7 @@ class ArmCpuSvfBuilder:
         g.comment("=" * 70)
         g.blank()
         g.runtest(10)
-        g.jtag_idcode()
+        g.jtag_idcode(self.dp_idcode)
         g.runtest(10)
 
         # Phase 2 — Power-Up
@@ -1093,9 +1093,9 @@ class ArmCpuSvfBuilder:
         g.blank()
 
         g.ap_write(SvfGenerator.AP_CSW, csw, csw_desc)
-        g.dp_read(
-            SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (wait for last operation)"
-        )
+        # g.dp_read(
+        #     SvfGenerator.DP_CTRL_STAT, "Read CTRL/STAT (wait for last operation)"
+        # )
         g.runtest(10)
 
     # ------------------------------------------------------------------
@@ -1258,7 +1258,7 @@ class ArmCpuSvfBuilder:
                 vchunk = max(len(words) // 20, 1)
                 if idx > 0 and idx % vchunk == 0:
                     pct = idx * 100 // len(words)
-                    g.comment(f"  ... {pct}% verified ({idx}/{len(words)} words)")
+                    g.comment(f"  ... {pct}%% verified ({idx}/{len(words)} words)")
 
             g.comment("  ✓ Verification sequence complete")
 
@@ -1346,10 +1346,10 @@ class ArmCpuSvfBuilder:
                 SvfGenerator.AP_CSW, csw_inc,
                 f"CSW: {size_name}, ADDRINC_SINGLE (MEM block write)",
             )
-            g.dp_read(
-                SvfGenerator.DP_CTRL_STAT,
-                "Read CTRL/STAT (wait for last operation)",
-            )
+            # g.dp_read(
+            #     SvfGenerator.DP_CTRL_STAT,
+            #     "Read CTRL/STAT (wait for last operation)",
+            # )
             g.runtest(10)
 
         # Reset TAR tracking, then set TAR once (auto-increment advances it)
@@ -1379,10 +1379,10 @@ class ArmCpuSvfBuilder:
                 SvfGenerator.AP_CSW, csw_off,
                 f"CSW: {size_name}, ADDRINC_OFF (restore)",
             )
-            g.dp_read(
-                SvfGenerator.DP_CTRL_STAT,
-                "Read CTRL/STAT (wait for last operation)",
-            )
+            # g.dp_read(
+            #     SvfGenerator.DP_CTRL_STAT,
+            #     "Read CTRL/STAT (wait for last operation)",
+            # )
             g.runtest(10)
 
         # Hardware TAR has auto-incremented past the block — force an
@@ -1532,7 +1532,7 @@ class ArmCpuSvfBuilder:
             if (idx + 1) > 0 and (idx + 1) % chunk == 0:
                 pct = (idx + 1) * 100 // len(self.cmd_list)
                 g.comment(
-                    f"  ... {pct}% complete ({idx + 1}/{len(self.cmd_list)} commands)"
+                    f"  ... {pct}%% complete ({idx + 1}/{len(self.cmd_list)} commands)"
                 )
 
         g.comment(f"  ✓ All {len(self.cmd_list)} commands executed")
