@@ -2,29 +2,29 @@
 """
 SVF (Serial Vector Format) Generator for ARM CPU Memory Access
 =================================================================
-Based on ARM IHI0031H — ARM Debug Interface Architecture Specification (ADIv6)
+Based on ARM IHI0031H -- ARM Debug Interface Architecture Specification (ADIv6)
 
 This tool generates SVF-format JTAG operation sequences for two use cases:
 
-1.  **Binary download** — download a .bin binary file into an ARM
+1.  **Binary download** -- download a .bin binary file into an ARM
     processor memory via the CoreSight Debug Access Port (DAP).
-2.  **Command file** — execute arbitrary memory read/write commands defined
+2.  **Command file** -- execute arbitrary memory read/write commands defined
     in a text file, with optional per-read TDO verification.
 
 Architecture Overview
 ---------------------
-    Host (SVF Player) ──JTAG──> JTAG-DP ──> MEM-AP ──> Memory Bus (AHB/AXI)
+    Host (SVF Player) --JTAG--> JTAG-DP --> MEM-AP --> Memory Bus (AHB/AXI)
 
     JTAG-DP IR (4-bit):
-        0xE = IDCODE      — Read device identification
-        0xA = DPACC       — Debug Port register access (35-bit DR)
-        0xB = APACC       — Access Port register access  (35-bit DR)
-        0x8 = ABORT       — Abort operation
+        0xE = IDCODE      -- Read device identification
+        0xA = DPACC       -- Debug Port register access (35-bit DR)
+        0xB = APACC       -- Access Port register access  (35-bit DR)
+        0x8 = ABORT       -- Abort operation
 
     DPACC / APACC DR Scan Chain (35 bits):
-        Bits [34:3] = DATA[31:0]   — 32-bit read/write data
-        Bits  [2:1] = A[3:2]       — Register address within bank
-        Bit    [0]  = RnW          — 1=Read, 0=Write
+        Bits [34:3] = DATA[31:0]   -- 32-bit read/write data
+        Bits  [2:1] = A[3:2]       -- Register address within bank
+        Bit    [0]  = RnW          -- 1=Read, 0=Write
 
     Pipelined Reads:
         AP/DP read data is returned in the *next* DPACC/APACC transaction.
@@ -32,7 +32,7 @@ Architecture Overview
 
 Memory Write Sequence (binary mode)
 -----------------------------------
-    1. JTAG Reset → Run-Test/Idle
+    1. JTAG Reset -> Run-Test/Idle
     2. Read IDCODE (verification)
     3. Power-up debug domain (DP.CTRL/STAT)
     4. Select MEM-AP (DP.SELECT)
@@ -43,7 +43,7 @@ Memory Write Sequence (binary mode)
 
 Memory Command Sequence (command-file mode)
 --------------------------------------------
-    1–4. Same setup as binary mode, but CSW uses ADDRINC_OFF.
+    1-4. Same setup as binary mode, but CSW uses ADDRINC_OFF.
     5. For each command:
        - Write: set AP.TAR, write AP.DRW
        - Read:  set AP.TAR, read AP.DRW, read DP.RDBUFF
@@ -110,7 +110,7 @@ class MemCmd:
                      commands.
         data:        Data value to write, expected data on read, or TCK
                      cycle count for wait commands.
-        op:          Operation type — ``Op.R`` (read), ``Op.W`` (write),
+        op:          Operation type -- ``Op.R`` (read), ``Op.W`` (write),
                      ``Op.T`` (TCK wait), or ``Op.M`` (binary download).
         verify:      For reads: whether to compare TDO against *data*
                      (Y/N).  Only meaningful when *op* is ``Op.R``.
@@ -148,21 +148,21 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
         <addr_hex>  <length>  MEM  <bin_file>
         0  <count>  TCK
 
-    - *addr_hex*    — 32-bit address in hexadecimal (e.g. ``0x80000000``).
-    - *data_hex*    — data word in hex; width is clipped to *data_width*
+    - *addr_hex*    -- 32-bit address in hexadecimal (e.g. ``0x80000000``).
+    - *data_hex*    -- data word in hex; width is clipped to *data_width*
                       bits.
-    - *W* or *R*    — write or read operation.
-    - *Y*           — (optional, read-only) verify that TDO matches
+    - *W* or *R*    -- write or read operation.
+    - *Y*           -- (optional, read-only) verify that TDO matches
                       *data_hex*.
-    - *MASK*        — (optional, hex) data-compare mask that must follow
+    - *MASK*        -- (optional, hex) data-compare mask that must follow
                       *Y* on a read line.  Only bits set to 1 in *MASK*
                       are compared against the expected *data_hex*; other
                       bits are ignored.  When omitted, all data bits are
                       compared.
-    - *WAIT<n>*     — (optional) per-command TCK wait override (e.g.
+    - *WAIT<n>*     -- (optional) per-command TCK wait override (e.g.
                       ``WAIT100``); overrides global ``--wait-cycles``
                       for this command only.
-    - *MEM*         — binary download: write the contents of *bin_file*
+    - *MEM*         -- binary download: write the contents of *bin_file*
                       to memory starting at *addr_hex*.  *length* is the
                       number of bytes to download (hex or decimal);
                       ``0`` means the whole file.  The CSW is switched to
@@ -273,7 +273,7 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
                 field = parts[i]
                 fu = field.upper()
 
-                # WAIT<n> — per-command wait cycle override
+                # WAIT<n> -- per-command wait cycle override
                 if fu.startswith("WAIT"):
                     try:
                         wait_cycles = int(field[4:])  # strip "WAIT" prefix
@@ -303,7 +303,7 @@ def parse_cmd_file(path: str, data_width: int = 32) -> List[MemCmd]:
                     i += 1
                     continue
 
-                # Data-compare MASK — hex, must immediately follow Y
+                # Data-compare MASK -- hex, must immediately follow Y
                 if op == Op.R and seen_y:
                     try:
                         tdo_mask = int(field, 16) & mask
@@ -341,7 +341,7 @@ class JtagChainConfig:
     """Describes a JTAG daisy-chain topology for multi-TAP systems.
 
     In a daisy chain, TAPs are connected in series:
-        TDI → [TAP_0] → [TAP_1] → ... → [TAP_n-1] → TDO
+        TDI -> [TAP_0] -> [TAP_1] -> ... -> [TAP_n-1] -> TDO
 
     Only the *target* TAP receives real IR/DR data; all others are placed
     in BYPASS mode (IR = all-1s, 1-bit DR = 0).
@@ -485,7 +485,7 @@ class JtagChainConfig:
         # Position target TDO after preceding BYPASS bits
         full_tdo = target_tdo << dr_pre_bits
 
-        # Only check the target TAP's bits — ignore bypass TAPs
+        # Only check the target TAP's bits -- ignore bypass TAPs
         full_mask = target_mask << dr_pre_bits
 
         return (full_tdo, full_mask)
@@ -510,11 +510,11 @@ class JtagChainConfig:
             f"[{n}]" if i == self.target_index else f" {n} "
             for i, n in enumerate(names)
         ]
-        return f"Daisy chain: {' → '.join(markers)}  (target marked [...])"
+        return f"Daisy chain: {' -> '.join(markers)}  (target marked [...])"
 
 
 # =============================================================================
-# SVF Formatter — Output Syntax Layer
+# SVF Formatter -- Output Syntax Layer
 # =============================================================================
 
 
@@ -526,7 +526,7 @@ class SvfFormatter:
     syntactically correct SVF lines that can be played back by OpenOCD,
     UrJTAG, Xilinx tools, and other JTAG utilities.
 
-    This class focuses on SVF *syntax* only — it does not perform chain
+    This class focuses on SVF *syntax* only -- it does not perform chain
     composition or JTAG sequencing.  Those responsibilities belong to
     ``SvfGenerator``.
 
@@ -556,7 +556,7 @@ class SvfFormatter:
         self._f.write(
             textwrap.dedent(f"""\
             // ============================================================================
-            //  SVF — Serial Vector Format
+            //  SVF -- Serial Vector Format
             //  Target:  ARM CPU (ARM IHI0031H / ADIv6)
             //  Chain:   {chain_desc}
             //  Generated by: svf_gen.py
@@ -649,7 +649,7 @@ class SvfFormatter:
 
 
 # =============================================================================
-# SVF Command Generator — JTAG Sequencing Layer
+# SVF Command Generator -- JTAG Sequencing Layer
 # =============================================================================
 
 
@@ -747,7 +747,7 @@ class SvfGenerator:
     def jtag_idcode(self, idcode: int):
         """Set IR = IDCODE, then scan 32-bit DR to read device ID."""
         self._sir(4, self.IR_IDCODE)
-        self._sdr(32, 0x00000000, comment="Read IDCODE — TDO receives device ID", tdo=idcode, tdo_mask=0xFFFFFFFF)
+        self._sdr(32, 0x00000000, comment="Read IDCODE -- TDO receives device ID", tdo=idcode, tdo_mask=0xFFFFFFFF)
 
     def jtag_dpacc(self):
         """Set IR = DPACC (Debug Port access)."""
@@ -790,8 +790,8 @@ class SvfGenerator:
 
         Performs a full pipelined read of the DP status register:
 
-            1. SIR(DPACC) + SDR(read CTRL/STAT)  — initiate the read
-            2. SIR(DPACC) + SDR(read RDBUFF)      — retrieve the value
+            1. SIR(DPACC) + SDR(read CTRL/STAT)  -- initiate the read
+            2. SIR(DPACC) + SDR(read RDBUFF)      -- retrieve the value
 
         This allows pending AP/DP transactions to complete and provides
         a synchronisation point in the JTAG command stream.  Intended for
@@ -840,7 +840,7 @@ class SvfGenerator:
         return ((data & 0xFFFFFFFF) << 3) | ((addr & 0x3) << 1) | (rnw & 0x1)
 
     def _sir(self, target_bits: int, target_tdi: int):
-        """Scan Instruction Register — set target TAP IR to *target_tdi*.
+        """Scan Instruction Register -- set target TAP IR to *target_tdi*.
 
         Performs chain composition via ``JtagChainConfig``, then delegates
         the formatted output to the attached formatter.
@@ -859,7 +859,7 @@ class SvfGenerator:
         tdo: Optional[int] = None,
         tdo_mask: Optional[int] = None,
     ):
-        """Scan Data Register — shift *target_tdi* into the target TAP DR.
+        """Scan Data Register -- shift *target_tdi* into the target TAP DR.
 
         Performs chain composition via ``JtagChainConfig``, then delegates
         the formatted output to the attached formatter.
@@ -994,7 +994,7 @@ class ArmCpuSvfBuilder:
     # ------------------------------------------------------------------
 
     def _write_tar(self, g: SvfGenerator, addr: int, label: str = ""):
-        """Write AP.TAR (and AP.TAR2 for 64-bit) — skip if unchanged.
+        """Write AP.TAR (and AP.TAR2 for 64-bit) -- skip if unchanged.
 
         Splits *addr* into upper/lower 32-bit halves.  Only emits APACC
         writes for halves that differ from the last written value.
@@ -1013,7 +1013,7 @@ class ArmCpuSvfBuilder:
 
         if self.addr64 and hi != self._last_tar_hi:
             g.ap_write(
-                SvfGenerator.AP_HTAR, hi, f"{label_prefix}TAR2 ← 0x{hi:08X}  (upper)"
+                SvfGenerator.AP_HTAR, hi, f"{label_prefix}TAR2 <- 0x{hi:08X}  (upper)"
             )
             self._last_tar_hi = hi
             # g.dp_read(
@@ -1021,7 +1021,7 @@ class ArmCpuSvfBuilder:
             # )
 
         if lo != self._last_tar_lo:
-            comment = f"{label_prefix}TAR ← 0x{lo:08X}"
+            comment = f"{label_prefix}TAR <- 0x{lo:08X}"
             if self.addr64:
                 comment += f"  (lower, full=0x{addr:016X})"
             g.ap_write(SvfGenerator.AP_LTAR, lo, comment)
@@ -1035,8 +1035,8 @@ class ArmCpuSvfBuilder:
     # ------------------------------------------------------------------
 
     def _emit_setup_phases(self, g: SvfGenerator, csw: int, csw_desc: str):
-        """Emit SVF phases 1–4 (reset, power-up, AP select, CSW config)."""
-        # Phase 1 — Reset & IDCODE
+        """Emit SVF phases 1-4 (reset, power-up, AP select, CSW config)."""
+        # Phase 1 -- Reset & IDCODE
         g.comment("=" * 70)
         g.comment("PHASE 1: JTAG Reset & Device Identification")
         g.comment("=" * 70)
@@ -1045,7 +1045,7 @@ class ArmCpuSvfBuilder:
         g.jtag_idcode(self.dp_idcode)
         g.runtest(10)
 
-        # Phase 2 — Power-Up
+        # Phase 2 -- Power-Up
         g.comment("=" * 70)
         g.comment("PHASE 2: Power-Up the Debug & System Domains")
         g.comment("=" * 70)
@@ -1068,11 +1068,11 @@ class ArmCpuSvfBuilder:
         # )
         # g.dp_read(
         #     SvfGenerator.DP_RDBUFF,
-        #     "Read RDBUFF — TDO = CTRL/STAT value; check ACK bits",
+        #     "Read RDBUFF -- TDO = CTRL/STAT value; check ACK bits",
         # )
         # g.runtest(10)
 
-        # Phase 3 — Select MEM-AP
+        # Phase 3 -- Select MEM-AP
         g.comment("=" * 70)
         g.comment("PHASE 3: Select MEM-AP via DP.SELECT")
         g.comment("=" * 70)
@@ -1086,7 +1086,7 @@ class ArmCpuSvfBuilder:
         )
         g.runtest(10)
 
-        # Phase 4 — Configure CSW
+        # Phase 4 -- Configure CSW
         g.comment("=" * 70)
         g.comment("PHASE 4: Configure MEM-AP (CSW)")
         g.comment("=" * 70)
@@ -1185,7 +1185,7 @@ class ArmCpuSvfBuilder:
         )
         g = gen  # shorthand
 
-        # --- Shared setup phases 1–4 -------------------------------------------
+        # --- Shared setup phases 1-4 -------------------------------------------
         csw = self._csw_value(auto_increment=True)
         size_name = {8: "8-bit", 16: "16-bit", 32: "32-bit"}[self.data_width]
         self._emit_setup_phases(
@@ -1193,7 +1193,7 @@ class ArmCpuSvfBuilder:
         )
 
         # ==================================================================
-        #  PHASE 5 — Write Binary Data to Memory (shared block writer)
+        #  PHASE 5 -- Write Binary Data to Memory (shared block writer)
         #  CSW is already auto-increment from the setup phases and must
         #  remain so for the optional verification phase below, so the
         #  shared writer skips its own CSW switch/restore.
@@ -1209,7 +1209,7 @@ class ArmCpuSvfBuilder:
         )
 
         # ==================================================================
-        #  PHASE 6 — Verification (optional)
+        #  PHASE 6 -- Verification (optional)
         # ==================================================================
         if self.verify:
             TDO_MASK = (0xFFFFFFFF << 3) | self.ACK_MASK
@@ -1221,13 +1221,13 @@ class ArmCpuSvfBuilder:
                 f"  Protocol: ADIv{self.adi_version}  "
                 f"(ACK OK = 0b{self.ACK_OK:03b}, mask = 0b{self.ACK_MASK:03b})"
             )
-            g.comment("  Each SDR includes TDO(expected) MASK — the SVF player")
+            g.comment("  Each SDR includes TDO(expected) MASK -- the SVF player")
             g.comment("  compares actual TDO against expected.  Both DATA and ACK")
             g.comment("  bits are verified.  Mismatches are reported immediately.")
             g.comment("=" * 70)
             g.blank()
 
-            # TAR auto-increments after each DRW read — set it once
+            # TAR auto-increments after each DRW read -- set it once
             # Reset tracking since auto-increment has moved hardware TAR
             self._last_tar_lo = None
             self._write_tar(g, self.base_addr, label="(auto-increment mode, verify)")
@@ -1235,15 +1235,15 @@ class ArmCpuSvfBuilder:
             for idx, expected_word in enumerate(words):
                 addr = self.base_addr + idx * word_bytes
 
-                # AP read DRW — request; TDO here is the *previous* pipelined
+                # AP read DRW -- request; TDO here is the *previous* pipelined
                 # result (stale), so we do NOT verify TDO on this transaction.
                 g.ap_read(
                     SvfGenerator.AP_DRW,
-                    f"Read DRW → 0x{addr:08X}  (request, TDO=stale)",
+                    f"Read DRW -> 0x{addr:08X}  (request, TDO=stale)",
                 )
                 g.runtest(self.mem_wait_cycles)  # Wait for memory read to complete
 
-                # DP read RDBUFF — TDO contains the DRW data from the AP read
+                # DP read RDBUFF -- TDO contains the DRW data from the AP read
                 # above.  Verify both data and ACK bits.
                 tdo_expected = (expected_word << 3) | self.ACK_OK
                 g.dp_read(
@@ -1260,10 +1260,10 @@ class ArmCpuSvfBuilder:
                     pct = idx * 100 // len(words)
                     g.comment(f"  ... {pct}%% verified ({idx}/{len(words)} words)")
 
-            g.comment("  ✓ Verification sequence complete")
+            g.comment("  OK Verification sequence complete")
 
         # ==================================================================
-        #  PHASE 7 — Clean Shutdown
+        #  PHASE 7 -- Clean Shutdown
         # ==================================================================
         self._emit_shutdown(g)
 
@@ -1331,7 +1331,7 @@ class ArmCpuSvfBuilder:
         if title is not None:
             g.comment(title)
         else:
-            g.comment(f"MEM download: {len(blob)} bytes → 0x{addr:08X}")
+            g.comment(f"MEM download: {len(blob)} bytes -> 0x{addr:08X}")
             g.comment(f"        Source: {bin_path}")
         g.comment(f"        Data width: {self.data_width}-bit, Words: {len(words)}")
         g.comment("        Mode: auto-increment (TAR set once)")
@@ -1361,13 +1361,13 @@ class ArmCpuSvfBuilder:
             g.ap_write(
                 SvfGenerator.AP_DRW,
                 word,
-                f"{label_prefix}DRW ← 0x{word:0{self.data_width // 4}X}  "
-                f"→ 0x{addr + idx * word_bytes:08X}  "
+                f"{label_prefix}DRW <- 0x{word:0{self.data_width // 4}X}  "
+                f"-> 0x{addr + idx * word_bytes:08X}  "
                 f"[{idx}/{len(words) - 1}]",
             )
             g.runtest(self.mem_wait_cycles)  # Wait for memory write to complete
 
-        g.comment(f"  ✓ MEM block complete — {len(words)} words, "
+        g.comment(f"  OK MEM block complete -- {len(words)} words, "
                   f"{len(blob)} bytes total")
         g.blank()
 
@@ -1385,7 +1385,7 @@ class ArmCpuSvfBuilder:
             # )
             g.runtest(10)
 
-        # Hardware TAR has auto-incremented past the block — force an
+        # Hardware TAR has auto-incremented past the block -- force an
         # explicit TAR write before the next random-access command.
         self._last_tar_lo = None
         self._last_tar_hi = None
@@ -1427,7 +1427,7 @@ class ArmCpuSvfBuilder:
         )
         g = gen  # shorthand
 
-        # --- Shared setup phases 1–4 -------------------------------------------
+        # --- Shared setup phases 1-4 -------------------------------------------
         size_name = {8: "8-bit", 16: "16-bit", 32: "32-bit"}[self.data_width]
         csw = self._csw_value(auto_increment=False)
         self._emit_setup_phases(
@@ -1435,7 +1435,7 @@ class ArmCpuSvfBuilder:
         )
 
         # ==================================================================
-        #  PHASE 5 — Execute Memory Commands
+        #  PHASE 5 -- Execute Memory Commands
         # ==================================================================
         g.comment("=" * 70)
         waits_count = sum(1 for c in self.cmd_list if c.op == Op.T)
@@ -1467,7 +1467,7 @@ class ArmCpuSvfBuilder:
             if cmd.op == Op.M:
                 # --- MEM binary download ---
                 g.comment(
-                    f"{label} MEM download: {cmd.mem_file} → 0x{cmd.addr:08X}"
+                    f"{label} MEM download: {cmd.mem_file} -> 0x{cmd.addr:08X}"
                     f"  (len={cmd.mem_len or 'whole file'})"
                 )
                 self._emit_mem_block(
@@ -1522,8 +1522,8 @@ class ArmCpuSvfBuilder:
                 g.ap_write(
                     SvfGenerator.AP_DRW,
                     cmd.data,
-                    f"{label} DRW ← 0x{cmd.data:0{self.data_width // 4}X}  "
-                    f"→ 0x{cmd.addr:08X}{wait_suffix}",
+                    f"{label} DRW <- 0x{cmd.data:0{self.data_width // 4}X}  "
+                    f"-> 0x{cmd.addr:08X}{wait_suffix}",
                 )
                 g.runtest(wait)  # Wait for memory write to complete
 
@@ -1535,11 +1535,11 @@ class ArmCpuSvfBuilder:
                     f"  ... {pct}%% complete ({idx + 1}/{len(self.cmd_list)} commands)"
                 )
 
-        g.comment(f"  ✓ All {len(self.cmd_list)} commands executed")
+        g.comment(f"  OK All {len(self.cmd_list)} commands executed")
         g.blank()
 
         # ==================================================================
-        #  PHASE 6 — Clean Shutdown
+        #  PHASE 6 -- Clean Shutdown
         # ==================================================================
         self._emit_shutdown(g)
 
@@ -1560,7 +1560,7 @@ class ArmCpuSvfBuilder:
         g.runtest(10)
         g._formatter.state_reset_idle()
         g.blank()
-        g.comment("End of SVF — Total TCK cycles include all operations above.")
+        g.comment("End of SVF -- Total TCK cycles include all operations above.")
 
 
 # =============================================================================
@@ -1639,7 +1639,7 @@ def main():
 
             Reference
             ---------
-              ARM IHI0031H — ARM Debug Interface Architecture Specification
+              ARM IHI0031H -- ARM Debug Interface Architecture Specification
               (ADIv6).  See also: ARM CPU Technical Reference Manual.
         """),
     )
@@ -1782,7 +1782,7 @@ def main():
 
     if has_bin:
         if not os.path.isfile(args.binfile):
-            print(f"Error: binary file not found — {args.binfile}", file=sys.stderr)
+            print(f"Error: binary file not found -- {args.binfile}", file=sys.stderr)
             sys.exit(1)
 
         file_size = os.path.getsize(args.binfile)
@@ -1797,7 +1797,7 @@ def main():
     # ---- Validate --cmds mode -------------------------------------------------
     if has_cmd:
         if not os.path.isfile(args.cmds):
-            print(f"Error: command file not found — {args.cmds}", file=sys.stderr)
+            print(f"Error: command file not found -- {args.cmds}", file=sys.stderr)
             sys.exit(1)
 
         try:
@@ -1819,7 +1819,7 @@ def main():
 
     # ---- Validate chain config ------------------------------------------------
     if args.chain and not os.path.isfile(args.chain):
-        print(f"Error: chain config file not found — {args.chain}", file=sys.stderr)
+        print(f"Error: chain config file not found -- {args.chain}", file=sys.stderr)
         sys.exit(1)
 
     if args.verbose:
@@ -1840,7 +1840,7 @@ def main():
         print(f"[INFO] Data width   : {args.width}-bit", file=sys.stderr)
         print(f"[INFO] AP selection : APSEL={args.ap}", file=sys.stderr)
         print(
-            f"[INFO] JTAG chain   : {args.chain or '(none — single TAP)'}",
+            f"[INFO] JTAG chain   : {args.chain or '(none -- single TAP)'}",
             file=sys.stderr,
         )
         print(
@@ -1877,12 +1877,12 @@ def main():
     if args.verbose:
         if has_bin:
             print(
-                f"[INFO] SVF generation complete — {result} bytes payload.",
+                f"[INFO] SVF generation complete -- {result} bytes payload.",
                 file=sys.stderr,
             )
         else:
             print(
-                f"[INFO] SVF generation complete — {result} commands.", file=sys.stderr
+                f"[INFO] SVF generation complete -- {result} commands.", file=sys.stderr
             )
 
 
