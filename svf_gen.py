@@ -661,6 +661,11 @@ class SvfGenerator:
     pass a custom *formatter* with the same public interface.
     """
 
+    FORMATTER_CLASS = {
+        "svf": SvfFormatter,  # default formatter class
+        "wgl": None,  # placeholder for future WGL formatter
+    }
+
     # ---- JTAG Instruction Register codes (4-bit for JTAG-DP) ---------------
     IR_IDCODE = 0xE  # IDCODE register access
     IR_DPACC = 0xA  # Debug Port access
@@ -706,7 +711,7 @@ class SvfGenerator:
         output_file: Optional[str] = None,
         chain: Optional[JtagChainConfig] = None,
         mem_wait_cycles: int = 0,
-        formatter: Optional[SvfFormatter] = None,
+        formatter: Optional[str] = None,
     ):
         """Open output stream (file or stdout).
 
@@ -723,7 +728,7 @@ class SvfGenerator:
                        different formatter to emit alternative formats (e.g.
                        WGL).
         """
-        self._formatter = formatter or SvfFormatter(output_file)
+        self._formatter = SvfGenerator.FORMATTER_CLASS.get(formatter, SvfFormatter)(output_file)
         self._chain = chain or JtagChainConfig.single_tap()
         self._mem_wait_cycles = mem_wait_cycles
         self._formatter.emit_header(self._chain.summary)
@@ -920,6 +925,7 @@ class ArmCpuSvfBuilder:
         cmd_list: Optional[List[MemCmd]] = None,
         addr64: bool = False,
         mem_wait_cycles: int = 0,
+        formatter: str = "svf",
     ):
         self.bin_path = bin_path
         self.base_addr = base_addr
@@ -934,6 +940,7 @@ class ArmCpuSvfBuilder:
         self.cmd_list = cmd_list
         self.addr64 = addr64
         self.mem_wait_cycles = mem_wait_cycles
+        self.formatter = formatter
         # TAR de-duplication: track last-written {lo, hi} to skip redundant writes
         self._last_tar_lo: Optional[int] = None
         self._last_tar_hi: Optional[int] = None
@@ -1182,6 +1189,7 @@ class ArmCpuSvfBuilder:
         gen = SvfGenerator(
             self.output_path, chain=chain,
             mem_wait_cycles=self.mem_wait_cycles,
+            formatter=self.formatter,
         )
         g = gen  # shorthand
 
@@ -1424,6 +1432,7 @@ class ArmCpuSvfBuilder:
         gen = SvfGenerator(
             self.output_path, chain=chain,
             mem_wait_cycles=self.mem_wait_cycles,
+            formatter=self.formatter,
         )
         g = gen  # shorthand
 
@@ -1684,6 +1693,15 @@ def main():
         help="Output SVF file path.  Default: stdout.",
     )
     parser.add_argument(
+        "--format",
+        default="svf",
+        metavar="FMT",
+        help=(
+            "Output format name, resolved via SvfGenerator.FORMATTER_CLASS.  "
+            "Default: svf."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         "-V",
         action="store_true",
@@ -1822,6 +1840,15 @@ def main():
         print(f"Error: chain config file not found -- {args.chain}", file=sys.stderr)
         sys.exit(1)
 
+    # ---- Validate output format -----------------------------------------------
+    if args.format not in SvfGenerator.FORMATTER_CLASS:
+        print(
+            f"[WARNING] Unknown output format '{args.format}'; falling back "
+            f"to 'svf'.  Available formats: "
+            f"{', '.join(SvfGenerator.FORMATTER_CLASS)}",
+            file=sys.stderr,
+        )
+
     if args.verbose:
         if has_bin:
             print("[INFO] Mode          : .bin download", file=sys.stderr)
@@ -1853,6 +1880,7 @@ def main():
         print(
             f"[INFO] 64-bit addr  : {'Yes' if args.addr64 else 'No'}", file=sys.stderr
         )
+        print(f"[INFO] Format       : {args.format}", file=sys.stderr)
         print(f"[INFO] Output       : {args.output or '(stdout)'}", file=sys.stderr)
 
     # ---- Generate -------------------------------------------------------------
@@ -1870,6 +1898,7 @@ def main():
         cmd_list=cmd_list,
         addr64=args.addr64,
         mem_wait_cycles=args.wait_cycles,
+        formatter=args.format,
     )
 
     result = builder.generate()
