@@ -411,6 +411,26 @@ class JtagChainConfig:
     # Chain-aware SIR / SDR composition
     # ------------------------------------------------------------------
 
+    def _ir_field_offset(self) -> int:
+        """Number of IR bits clocked *before* the target TAP's IR bits.
+
+        In a daisy chain the TDI bit stream is shared by all the TAPs: the
+        first bit clocked in travels through every TAP and only settles, once
+        all the shifts are done, in the TAP closest to TDO, while the last bit
+        clocked in stays in the TAP closest to TDI.  The instruction field of
+        the target TAP therefore starts at stream position
+        ``sum(irlen of the TAPs after it)``.
+        """
+        return sum(tap["irlen"] for tap in self.taps[self.target_index + 1 :])
+
+    def _dr_field_offset(self) -> int:
+        """Number of DR bits clocked *before* the target TAP's DR bits.
+
+        Each non-target TAP left in BYPASS contributes a single DR bit, and
+        the bits of the TAPs closer to TDO are clocked out first.
+        """
+        return len(self.taps) - self.target_index - 1
+
     def compose_sir(self, target_ir: int, target_ir_bits: int) -> tuple:
         """Given the target TAP's IR value and bit-width, return the
         full daisy-chain SIR as ``(total_bits, tdi_value)``.
@@ -423,24 +443,21 @@ class JtagChainConfig:
             return (target_ir_bits, target_ir)
 
         t = self.target_index
+        irlen_after = self._ir_field_offset()
 
-        # IR lengths before / after the target
-        irlen_before = sum(tap["irlen"] for tap in self.taps[:t])
-        irlen_after = sum(tap["irlen"] for tap in self.taps[t + 1 :])
-
-        total_bits = irlen_before + target_ir_bits + irlen_after
-
-        # BYPASS IR = all-1s for the given length
-        bypass_before = (1 << irlen_before) - 1 if irlen_before else 0
-        bypass_after = (1 << irlen_after) - 1 if irlen_after else 0
+        total_bits = sum(tap["irlen"] for tap in self.taps)
+        total_bits += target_ir_bits - self.taps[t]["irlen"]
 
         # TDI layout (LSB shifted first in JTAG):
-        #   [bypass_after] [target_ir] [bypass_before]
-        tdi = (
-            (bypass_after << (irlen_before + target_ir_bits))
-            | (target_ir << irlen_before)
-            | bypass_before
-        )
+        #   [bypass_before] [target_ir] [bypass_after]
+        tdi = target_ir << irlen_after
+        for index, tap in enumerate(self.taps):
+            if index == t:
+                continue
+            # BYPASS IR = all-1s for the given length
+            bypass = (1 << tap["irlen"]) - 1
+            tdi |= bypass << sum(prev["irlen"]
+                                 for prev in self.taps[index + 1 :])
 
         return (total_bits, tdi)
 
@@ -454,16 +471,12 @@ class JtagChainConfig:
         if n <= 1:
             return (target_dr_bits, target_dr)
 
-        t = self.target_index
-
         # Each non-target TAP in BYPASS = 1 DR bit
-        dr_pre_bits = t  # TAPs before target
-        dr_post_bits = n - t - 1  # TAPs after target
+        dr_offset = self._dr_field_offset()  # BYPASS bits closer to TDO
+        total_bits = dr_offset + target_dr_bits + self.target_index
 
-        total_bits = dr_pre_bits + target_dr_bits + dr_post_bits
-
-        # BYPASS DR = 0
-        tdi = target_dr << dr_pre_bits
+        # BYPASS DR = 0, so the target value only has to be shifted into place
+        tdi = target_dr << dr_offset
 
         return (total_bits, tdi)
 
@@ -479,14 +492,13 @@ class JtagChainConfig:
         if n <= 1:
             return (target_tdo, target_mask)
 
-        t = self.target_index
-        dr_pre_bits = t
+        # Target TDO bits follow the BYPASS bits of the TAPs closer to TDO
+        dr_offset = self._dr_field_offset()
 
-        # Position target TDO after preceding BYPASS bits
-        full_tdo = target_tdo << dr_pre_bits
+        full_tdo = target_tdo << dr_offset
 
         # Only check the target TAP's bits -- ignore bypass TAPs
-        full_mask = target_mask << dr_pre_bits
+        full_mask = target_mask << dr_offset
 
         return (full_tdo, full_mask)
 
